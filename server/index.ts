@@ -2,15 +2,9 @@ import express from "express";
 import path from "path";
 import { registerRoutes } from "./routes.js";
 
-// ── Load .env (CJS-safe, before any env reads) ─────────────────────────────
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require("dotenv").config();
-} catch {
-  // dotenv not installed — env vars must come from the OS
-}
+// Примечание: tsx автоматически загружает .env (строка '◇ injected env from .env' в логе).
+// require("dotenv") был удалён, так как перезаписывал PORT после того как tsx его уже загрузил.
 
-// ── Bootstrap ──────────────────────────────────────────────────────────────
 (async () => {
   const app = express();
   app.use(express.json({ limit: "10mb" }));
@@ -18,7 +12,6 @@ try {
 
   registerRoutes(app);
 
-  // ── Static / Dev middleware ──────────────────────────────────────────────
   if (process.env.NODE_ENV === "production") {
     const distPublic = path.join(__dirname, "../dist/public");
     app.use(express.static(distPublic));
@@ -28,7 +21,6 @@ try {
   } else {
     try {
       const { createServer } = await import("vite");
-      // Указываем путь к vite.config.ts явно, чтобы root:"client" применился
       const root = path.resolve(__dirname, "..");
       const vite = await createServer({
         configFile: path.join(root, "vite.config.ts"),
