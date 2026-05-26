@@ -38,9 +38,9 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 const SEVERITY_ICON = {
-  error:   <AlertTriangle className="h-3.5 w-3.5 text-destructive" />,
-  warning: <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />,
-  info:    <Info className="h-3.5 w-3.5 text-blue-500" />,
+  error:   <AlertTriangle className="h-3.5 w-3.5 text-destructive shrink-0" />,
+  warning: <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />,
+  info:    <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />,
 };
 
 function annClass(v: PolicyViolation): string {
@@ -51,7 +51,8 @@ function legendDotClass(v: PolicyViolation): string {
   return `legend-dot legend-dot-${v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info"}`;
 }
 
-// ── drag-resize ──────────────────────────────────────────────────────────────
+// ── drag-resize ──────────────────────────────────────────────────────────────────
+
 function useDragResize(initial: number, min: number, max: number, dir: "left" | "right" = "right") {
   const [width, setWidth] = useState(initial);
   const drag = useRef(false);
@@ -101,7 +102,7 @@ export default function Workbench() {
   const [sevFilter, setSevFilter] = useState("all");
 
   const sidebar    = useDragResize(220, 160, 320, "right");
-  const rightPanel = useDragResize(380, 280, 560, "left");
+  const rightPanel = useDragResize(340, 280, 520, "left");
 
   const { violations, loading: checkLoading, error: checkError, result: checkResult, activeModel, check, reset } = useChecker();
 
@@ -183,7 +184,6 @@ export default function Workbench() {
     }
   }
 
-  // ── Import document file (.docx / .pdf / .txt / .md) ─────────────────────
   async function handleDocFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -234,24 +234,22 @@ export default function Workbench() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-background text-foreground">
+    <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
 
-      {/* ── Header ────────────────────────────────────────────────────── */}
+      {/* ── Header ─────────────────────────────────────────────────────────────────── */}
       <header className="h-14 border-b flex items-center px-4 gap-3 shrink-0 bg-background/80 backdrop-blur">
         <span className="text-primary"><EPCLogo size={30} /></span>
-        <div className="leading-none select-none">
+        <div className="leading-none select-none shrink-0">
           <div className="text-[15px] font-bold tracking-normal text-foreground">PolicyCheck</div>
           <div className="text-[11px] text-muted-foreground hidden sm:block">Editorial Policy Checker</div>
         </div>
-        <Separator orientation="vertical" className="h-6 mx-1" />
-        <div className="flex items-center gap-2 text-sm min-w-0 flex-1">
+        <Separator orientation="vertical" className="h-6 mx-1 shrink-0" />
+        <div className="flex items-center gap-2 text-sm min-w-0 flex-1 overflow-hidden">
           <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-          <span className="font-medium truncate max-w-[28ch]">{docName}</span>
+          <span className="font-medium truncate">{docName}</span>
         </div>
         <div className="ml-auto flex items-center gap-2 shrink-0">
-          {/* Документ: docx, pdf, txt, md */}
           <input ref={fileDocInput} type="file" accept=".docx,.pdf,.txt,.md" onChange={handleDocFile} className="hidden" />
-          {/* Политика: docx, pdf, txt, md */}
           <input ref={filePolicyInput} type="file" accept=".docx,.pdf,.txt,.md" onChange={handlePolicyFile} className="hidden" />
           <Button variant="outline" size="sm" onClick={() => fileDocInput.current?.click()}>
             <Upload className="h-4 w-4 mr-1.5" />Документ
@@ -272,28 +270,28 @@ export default function Workbench() {
         </div>
       </header>
 
-      {/* ── AI status bar ─────────────────────────────────────────────── */}
+      {/* ── AI status bar ────────────────────────────────────────────────────────────────── */}
       {(checkLoading || checkResult || checkError) && (
-        <div className="h-7 border-b px-4 flex items-center gap-2 text-[11px] bg-muted/40">
+        <div className="h-7 border-b px-4 flex items-center gap-2 text-[11px] bg-muted/40 shrink-0">
           <Sparkles className="h-3.5 w-3.5 text-primary shrink-0" />
-          {checkLoading && <span className="text-muted-foreground">AI-проверка…</span>}
+          {checkLoading && <span className="text-muted-foreground">Проверка…</span>}
           {!checkLoading && checkResult && (
-            <span className="flex items-center gap-1.5">
-              Найдено: {stats.errors} ошибок, {stats.warnings} предупреждений, {stats.info} заметок
+            <span className="flex items-center gap-1.5 min-w-0">
+              <span className="truncate">Найдено: {stats.errors} ошибок, {stats.warnings} предупреждений, {stats.info} заметок</span>
               {activeModel && (
-                <Badge variant="outline" className="ml-1 text-[10px] px-1.5 py-0 h-4 gap-1">
+                <Badge variant="outline" className="ml-1 text-[10px] px-1.5 py-0 h-4 gap-1 shrink-0">
                   <Cpu className="h-2.5 w-2.5" />{activeModel}
                 </Badge>
               )}
             </span>
           )}
           {!checkLoading && checkError && (
-            <span className="text-destructive">{checkError}</span>
+            <span className="text-destructive truncate">{checkError}</span>
           )}
         </div>
       )}
 
-      {/* ── URL dialog ─────────────────────────────────────────────────── */}
+      {/* ── URL dialog ─────────────────────────────────────────────────────────────────── */}
       <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
@@ -308,15 +306,15 @@ export default function Workbench() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Main layout ────────────────────────────────────────────────── */}
-      <div className="flex flex-1 min-h-0">
+      {/* ── Main layout ─────────────────────────────────────────────────────────────────── */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* Left sidebar */}
-        <aside className="flex flex-col border-r bg-muted/30 shrink-0 relative" style={{ width: sidebar.width }}>
+        <aside className="flex flex-col border-r bg-muted/30 shrink-0 overflow-hidden relative" style={{ width: sidebar.width }}>
           <div className="p-3 border-b space-y-2">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Редакционная политика</p>
             <Button variant="outline" size="sm" className="w-full h-8 text-xs" onClick={() => filePolicyInput.current?.click()} disabled={policyLoading}>
-              <Upload className="h-3.5 w-3.5 mr-1.5" />Загрузить политику
+              <Upload className="h-3.5 w-3.5 mr-1.5 shrink-0" />Загрузить политику
             </Button>
             {policies.length > 0 && (
               <Select value={activePolicyId ?? ""} onValueChange={setActivePolicyId}>
@@ -332,29 +330,29 @@ export default function Workbench() {
             )}
             {activePolicyId && (
               <Button variant="default" size="sm" className="w-full h-8 text-xs" onClick={handleParsePolicy} disabled={policyLoading}>
-                <Sparkles className="h-3.5 w-3.5 mr-1.5" />{policyLoading ? "AI-парсинг…" : "Разобрать правила"}
+                <Sparkles className="h-3.5 w-3.5 mr-1.5 shrink-0" />{policyLoading ? "AI-парсинг…" : "Разобрать правила"}
               </Button>
             )}
           </div>
 
-          <nav className="flex flex-col gap-1 p-2">
+          <nav className="flex flex-col gap-1 p-2 overflow-hidden">
             {(["violations", "rules", "stats"] as Panel[]).map((key) => {
               const labels: Record<Panel, string> = { violations: "Нарушения", rules: "Правила политики", stats: "Статистика" };
               const icons: Record<Panel, typeof FileText> = { violations: AlertTriangle, rules: BookOpen, stats: Info };
               const Icon = icons[key];
               return (
                 <button key={key} type="button" onClick={() => setPanel(key)}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm w-full text-left transition-colors ${
+                  className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm w-full text-left transition-colors min-w-0 ${
                     panel === key ? "bg-primary text-primary-foreground" : "hover:bg-muted text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
-                  <span className="truncate">{labels[key]}</span>
+                  <span className="truncate flex-1">{labels[key]}</span>
                   {key === "violations" && violations.length > 0 && (
-                    <Badge variant={stats.errors > 0 ? "destructive" : "secondary"} className="ml-auto text-[10px] px-1.5">{violations.length}</Badge>
+                    <Badge variant={stats.errors > 0 ? "destructive" : "secondary"} className="ml-auto text-[10px] px-1.5 shrink-0">{violations.length}</Badge>
                   )}
                   {key === "rules" && policyRules.length > 0 && (
-                    <Badge variant="secondary" className="ml-auto text-[10px] px-1.5">{policyRules.length}</Badge>
+                    <Badge variant="secondary" className="ml-auto text-[10px] px-1.5 shrink-0">{policyRules.length}</Badge>
                   )}
                 </button>
               );
@@ -364,7 +362,7 @@ export default function Workbench() {
         </aside>
 
         {/* Document area */}
-        <main className="flex-1 flex flex-col min-w-0 relative">
+        <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
           {editMode && (
             <div className="h-9 border-b flex items-center gap-1 px-3 bg-muted/20 shrink-0">
               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => document.execCommand("bold")}><Bold className="h-3.5 w-3.5" /></Button>
@@ -377,9 +375,9 @@ export default function Workbench() {
             </div>
           )}
 
-          <ScrollArea className="flex-1">
+          <ScrollArea className="flex-1 min-h-0">
             {!editMode ? (
-              <div className="p-6 min-h-full font-mono text-sm leading-relaxed whitespace-pre-wrap select-text">
+              <div className="p-6 min-h-full font-mono text-sm leading-relaxed whitespace-pre-wrap select-text break-words">
                 {docText ? segments.map((seg, idx) => {
                   if (seg.kind === "plain") return <span key={idx}>{seg.text}</span>;
                   const v = seg.violation!;
@@ -405,7 +403,7 @@ export default function Workbench() {
                 )}
               </div>
             ) : (
-              <div className="p-6 min-h-full font-mono text-sm leading-relaxed outline-none whitespace-pre-wrap cursor-text"
+              <div className="p-6 min-h-full font-mono text-sm leading-relaxed outline-none whitespace-pre-wrap cursor-text break-words"
                 contentEditable suppressContentEditableWarning
                 onInput={(e) => setDraft((e.target as HTMLDivElement).innerText)}
               >{docText}</div>
@@ -414,34 +412,35 @@ export default function Workbench() {
 
           {!editMode && docText && (
             <button type="button"
-              className="absolute bottom-4 right-4 h-9 w-9 rounded-full bg-primary text-primary-foreground shadow-lg flex items-center justify-center hover:bg-primary/90 transition-colors"
+              className="absolute bottom-4 right-4 h-9 w-9 rounded-full bg-primary text-primary-foreground shadow-lg flex items-center justify-center hover:bg-primary/90 transition-colors z-10"
               onClick={() => setEditMode(true)} title="Редактировать документ"
             ><PenSquare className="h-4 w-4" /></button>
           )}
         </main>
 
         {/* Right inspector panel */}
-        <div className="flex flex-col border-l bg-background shrink-0 relative" style={{ width: rightPanel.width }}>
+        <div className="flex flex-col border-l bg-background shrink-0 overflow-hidden relative" style={{ width: rightPanel.width }}>
           <div className="absolute top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/30 transition-colors z-10" style={{ left: 0 }} onMouseDown={rightPanel.onMouseDown} />
-          <ScrollArea className="flex-1">
-            <div className="p-4">
+          <ScrollArea className="flex-1 min-h-0">
+            <div className="p-4 min-w-0">
 
               {panel === "violations" && (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <h2 className="text-sm font-semibold">Нарушения</h2>
-                    <Badge variant="outline" className="text-[10px]">{violations.length}</Badge>
+                    <Badge variant="outline" className="text-[10px] shrink-0">{violations.length}</Badge>
                   </div>
-                  <div className="flex gap-1.5">
+                  {/* Filters — stack vertically to prevent overflow */}
+                  <div className="flex flex-col gap-1.5">
                     <Select value={catFilter} onValueChange={setCatFilter}>
-                      <SelectTrigger className="h-7 flex-1 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="h-7 w-full text-xs"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all" className="text-xs">Все категории</SelectItem>
                         {Object.entries(CATEGORY_LABELS).map(([k, v]) => <SelectItem key={k} value={k} className="text-xs">{v}</SelectItem>)}
                       </SelectContent>
                     </Select>
                     <Select value={sevFilter} onValueChange={setSevFilter}>
-                      <SelectTrigger className="h-7 w-[100px] text-xs"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="h-7 w-full text-xs"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all" className="text-xs">Все</SelectItem>
                         <SelectItem value="error" className="text-xs">Ошибки</SelectItem>
@@ -461,23 +460,34 @@ export default function Workbench() {
                         const isSel = selected?.start === v.start && selected?.end === v.end;
                         return (
                           <button key={v.id} type="button"
-                            className={`w-full text-left rounded-md px-3 py-2 text-xs transition-colors border ${
+                            className={`w-full text-left rounded-md px-3 py-2 text-xs transition-colors border overflow-hidden ${
                               isSel ? "bg-primary/10 border-primary/30" : "hover:bg-muted border-transparent hover:border-border"
                             }`}
                             onClick={() => scrollToViolation(v)}
                           >
-                            <div className="flex items-center gap-1.5 mb-0.5">
+                            {/* Header row: dot + icon + category + badge + confidence */}
+                            <div className="flex items-center gap-1.5 mb-1 min-w-0">
                               <span className={legendDotClass(v)} />
                               {SEVERITY_ICON[v.severity]}
-                              <span className="font-medium">{CATEGORY_LABELS[v.category]}</span>
-                              {v.source === "heuristic" && <Badge variant="outline" className="text-[9px] px-1 h-3.5">эвристика</Badge>}
-                              {v.confidence !== undefined && <span className="ml-auto text-[10px] text-muted-foreground">{Math.round(v.confidence * 100)}%</span>}
+                              <span className="font-medium truncate">{CATEGORY_LABELS[v.category]}</span>
+                              {v.source === "heuristic" && (
+                                <Badge variant="outline" className="text-[9px] px-1 h-3.5 shrink-0 ml-auto">эвристика</Badge>
+                              )}
+                              {v.confidence !== undefined && v.source !== "heuristic" && (
+                                <span className="ml-auto text-[10px] text-muted-foreground shrink-0">{Math.round(v.confidence * 100)}%</span>
+                              )}
                             </div>
-                            <div className="text-muted-foreground truncate">«{v.matchedText}»</div>
-                            {v.explanation && <div className="text-[10px] text-muted-foreground/70 mt-0.5 line-clamp-2">{v.explanation}</div>}
+                            {/* Matched text — wrap instead of truncate */}
+                            <div className="text-muted-foreground break-words line-clamp-3">«{v.matchedText}»</div>
+                            {/* Explanation */}
+                            {v.explanation && (
+                              <div className="text-[10px] text-muted-foreground/70 mt-0.5 break-words line-clamp-3">{v.explanation}</div>
+                            )}
+                            {/* Suggestion */}
                             {v.suggestion && (
-                              <div className="mt-1 text-[10px] flex items-center gap-1 text-primary">
-                                <ChevronRight className="h-3 w-3" />→ {v.suggestion}
+                              <div className="mt-1 text-[10px] flex items-center gap-1 text-primary min-w-0">
+                                <ChevronRight className="h-3 w-3 shrink-0" />
+                                <span className="truncate">→ {v.suggestion}</span>
                               </div>
                             )}
                           </button>
@@ -490,28 +500,28 @@ export default function Workbench() {
 
               {panel === "rules" && (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <h2 className="text-sm font-semibold">Правила политики</h2>
-                    <Badge variant="outline" className="text-[10px]">{policyRules.length}</Badge>
+                    <Badge variant="outline" className="text-[10px] shrink-0">{policyRules.length}</Badge>
                   </div>
                   {policyRules.length === 0 ? (
                     <p className="text-xs text-muted-foreground">Загрузите политику и запустите AI-парсинг.</p>
                   ) : (
                     <div className="space-y-2">
                       {policyRules.map((rule) => (
-                        <div key={rule.id} className="rounded-md border p-3 space-y-1">
-                          <div className="flex items-center gap-1.5">
-                            <Badge variant={rule.severity === "error" ? "destructive" : rule.severity === "warning" ? "secondary" : "outline"} className="text-[10px]">
+                        <div key={rule.id} className="rounded-md border p-3 space-y-1 overflow-hidden">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <Badge variant={rule.severity === "error" ? "destructive" : rule.severity === "warning" ? "secondary" : "outline"} className="text-[10px] shrink-0">
                               {CATEGORY_LABELS[rule.category] ?? rule.category}
                             </Badge>
-                            {rule.source && <span className="text-[10px] text-muted-foreground">{rule.source}</span>}
+                            {rule.source && <span className="text-[10px] text-muted-foreground truncate">{rule.source}</span>}
                           </div>
-                          <p className="text-xs font-medium">{rule.name}</p>
-                          <p className="text-[11px] text-muted-foreground leading-relaxed">{rule.description}</p>
+                          <p className="text-xs font-medium break-words">{rule.name}</p>
+                          <p className="text-[11px] text-muted-foreground leading-relaxed break-words">{rule.description}</p>
                           {rule.examples?.map((ex, i) => (
                             <div key={i} className="text-[10px] space-y-0.5 pt-1">
-                              <div className="text-destructive">✗ {ex.bad}</div>
-                              <div className="text-green-600 dark:text-green-400">✓ {ex.good}</div>
+                              <div className="text-destructive break-words">✗ {ex.bad}</div>
+                              <div className="text-green-600 dark:text-green-400 break-words">✓ {ex.good}</div>
                             </div>
                           ))}
                         </div>
@@ -531,15 +541,15 @@ export default function Workbench() {
                       { label: "Предупреждений",  value: stats.warnings, color: "text-amber-500" },
                       { label: "Инфо",            value: stats.info,     color: "text-blue-500" },
                     ].map(({ label, value, color }) => (
-                      <div key={label} className="rounded-md border p-3">
+                      <div key={label} className="rounded-md border p-3 overflow-hidden">
                         <div className={`text-xl font-bold ${color ?? ""}`}>{value}</div>
-                        <div className="text-[11px] text-muted-foreground">{label}</div>
+                        <div className="text-[11px] text-muted-foreground truncate">{label}</div>
                       </div>
                     ))}
                   </div>
                   {checkResult?.summary && (
-                    <div className="rounded-md bg-muted/40 p-3">
-                      <p className="text-xs text-muted-foreground">{checkResult.summary}</p>
+                    <div className="rounded-md bg-muted/40 p-3 overflow-hidden">
+                      <p className="text-xs text-muted-foreground break-words">{checkResult.summary}</p>
                     </div>
                   )}
                 </div>
