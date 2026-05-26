@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText, Upload, Link2, Sun, Moon, Sparkles, BookOpen,
   AlertTriangle, CheckCircle2, Info, ChevronRight, Cpu, FileDown,
-  PenSquare, RotateCcw,
+  PenSquare, RotateCcw, Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +23,11 @@ import { importFile, htmlToText } from "@/lib/importDoc";
 import { apiRequest } from "@/lib/queryClient";
 import { useChecker } from "@/hooks/useChecker";
 import RichEditor, { type RichEditorHandle } from "@/components/RichEditor";
+import { useLocalStorage, clearStorageByPrefix } from "@/hooks/useLocalStorage";
 import type { PolicyViolation, PolicyDocument } from "@shared/types";
+
+// ── localStorage key prefix ───────────────────────────────────────────────────
+const LS = "epc_v1_";
 
 type Panel = "violations" | "rules" | "stats";
 
@@ -76,15 +80,7 @@ function legendDotClass(v: PolicyViolation): string {
   return `legend-dot legend-dot-${v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info"}`;
 }
 
-// ── Normalize DOM text to match server plain-text offsets ────────────────────
-// The server calls htmlToPlainText() which converts block-level tags to \n
-// then strips all tags. Browser innerText produces the same text but with
-// \n chars at block boundaries. We must count those \n as single characters
-// the same way the server does, so offsets stay in sync.
-//
-// Strategy: collect text nodes; for each block-level element boundary (p, h1-6,
-// li, br) inject a synthetic \n text node so cumulative offset math matches
-// the server's htmlToPlainText output.
+// ── Normalize DOM text to match server plain-text offsets ─────────────────────
 function collectTextNodes(
   container: HTMLElement,
 ): { node: Text; start: number; end: number }[] {
@@ -105,20 +101,10 @@ function collectTextNodes(
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const el = node as HTMLElement;
     const tag = el.tagName;
-
-    // Inject \n offset before each block element (except the very first)
-    // to mirror htmlToPlainText which appends \n on </p>, </h*>, </li>
-    if (!isFirst && BLOCK_TAGS.has(tag)) {
-      offset += 1; // represents the \n
-    }
-
+    if (!isFirst && BLOCK_TAGS.has(tag)) { offset += 1; }
     const children = Array.from(el.childNodes);
     children.forEach((child, i) => walk(child, isFirst && i === 0));
-
-    // After block element add trailing \n (mirrors </p> => \n)
-    if (BLOCK_TAGS.has(tag)) {
-      offset += 1;
-    }
+    if (BLOCK_TAGS.has(tag)) { offset += 1; }
   }
 
   walk(container, true);
@@ -161,7 +147,7 @@ function ExportMenu({ onExport, disabled }: { onExport: (f: "docx" | "html" | "t
   );
 }
 
-// ── drag-resize ──────────────────────────────────────────────────────────────
+// ── drag-resize ───────────────────────────────────────────────────────────────
 function useDragResize(initial: number, min: number, max: number, dir: "left" | "right" = "right") {
   const [width, setWidth] = useState(initial);
   const drag = useRef(false);
@@ -206,13 +192,9 @@ function AnnotatedHtmlView({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Phase 1: inject <mark> elements after HTML renders.
-  // Uses collectTextNodes() which mirrors server htmlToPlainText offset logic.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-
-    // Strip previous marks
     container.querySelectorAll("mark[data-vid]").forEach((el) => {
       const parent = el.parentNode;
       if (!parent) return;
@@ -220,42 +202,32 @@ function AnnotatedHtmlView({
       parent.removeChild(el);
     });
     spanRefs.current.clear();
-
     if (!violations.length) return;
-
-    // Collect text nodes with offsets that match server plain-text offsets
     const nodes = collectTextNodes(container);
     const totalLen = nodes.length > 0 ? nodes[nodes.length - 1].end : 0;
-
-    // Process high-start first so earlier offsets stay valid
     const sorted = [...violations]
       .filter(v => v.start >= 0 && v.end > v.start && v.end <= totalLen + 10)
       .sort((a, b) => b.start - a.start);
-
     for (const v of sorted) {
       const overlapping = nodes.filter(n => n.end > v.start && n.start < v.end);
       if (!overlapping.length) continue;
-
       if (overlapping.length === 1) {
         const { node: textNode, start: nodeStart } = overlapping[0];
         const localStart = v.start - nodeStart;
         const localEnd   = v.end   - nodeStart;
         const text = textNode.textContent ?? "";
         if (localStart < 0 || localEnd > text.length || localStart >= localEnd) continue;
-
         const before = document.createTextNode(text.slice(0, localStart));
         const mark   = document.createElement("mark");
         mark.dataset.vid = v.id;
         mark.textContent = text.slice(localStart, localEnd);
         const after = document.createTextNode(text.slice(localEnd));
-
         const parent = textNode.parentNode;
         if (!parent) continue;
         parent.insertBefore(before, textNode);
         parent.insertBefore(mark, textNode);
         parent.insertBefore(after, textNode);
         parent.removeChild(textNode);
-
         overlapping[0].node  = after as unknown as Text;
         overlapping[0].start = nodeStart + localEnd;
       }
@@ -263,7 +235,6 @@ function AnnotatedHtmlView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [html, violations]);
 
-  // Phase 2: update classes/handlers on existing marks
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -271,13 +242,11 @@ function AnnotatedHtmlView({
       const vid = el.dataset.vid!;
       const v   = violations.find(x => x.id === vid);
       if (!v) return;
-
       el.className = [
         annClass(v),
         hoveredId === vid ? "ann-focused" : "",
         (selected?.start === v.start && selected?.end === v.end) ? "ann-selected" : "",
       ].filter(Boolean).join(" ");
-
       spanRefs.current.set(vid, el as HTMLSpanElement);
       el.onmouseenter = () => onHover(vid);
       el.onmouseleave = () => onHover(null);
@@ -302,29 +271,54 @@ export default function Workbench() {
   const filePolicyInput      = useRef<HTMLInputElement | null>(null);
   const editorRef            = useRef<RichEditorHandle>(null);
 
-  const [docName, setDocName]   = useState("Документ не загружен");
-  const [docHtml, setDocHtml]   = useState("");
-  const [docText, setDocText]   = useState("");
+  // ── Persisted state ─────────────────────────────────────────────────────────
+  const [docName, setDocName, clearDocName]           = useLocalStorage(`${LS}docName`, "Документ не загружен");
+  const [docHtml, setDocHtml, clearDocHtml]           = useLocalStorage(`${LS}docHtml`, "", 800);
+  const [docText, setDocText, clearDocText]           = useLocalStorage(`${LS}docText`, "", 800);
+  const [activePolicyId, setActivePolicyId,
+         clearActivePolicyId]                         = useLocalStorage<string | null>(`${LS}activePolicyId`, null, 0);
+  const [catFilter, setCatFilter, clearCatFilter]     = useLocalStorage(`${LS}catFilter`, "all", 0);
+  const [sevFilter, setSevFilter, clearSevFilter]     = useLocalStorage(`${LS}sevFilter`, "all", 0);
+  const [savedViolations, setSavedViolations,
+         clearSavedViolations]                        = useLocalStorage<PolicyViolation[]>(`${LS}violations`, [], 800);
+  // ── Transient state ──────────────────────────────────────────────────────────
   const [editMode, setEditMode] = useState(false);
   const [panel, setPanel]       = useState<Panel>("violations");
   const [selected, setSelected] = useState<{ start: number; end: number } | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
 
   const [policies, setPolicies]             = useState<(Pick<PolicyDocument, "id" | "name" | "uploadedAt"> & { ruleCount: number; aiParsed: boolean })[]>([]);
-  const [activePolicyId, setActivePolicyId] = useState<string | null>(null);
   const [policyRules, setPolicyRules]       = useState<PolicyDocument["rules"]>([]);
   const [policyLoading, setPolicyLoading]   = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [linkUrl, setLinkUrl]               = useState("");
   const [linkLoading, setLinkLoading]       = useState(false);
   const [exportLoading, setExportLoading]   = useState(false);
-  const [catFilter, setCatFilter]           = useState("all");
-  const [sevFilter, setSevFilter]           = useState("all");
 
   const sidebar    = useDragResize(220, 160, 320, "right");
   const rightPanel = useDragResize(340, 280, 520, "left");
 
-  const { violations, loading: checkLoading, error: checkError, result: checkResult, activeModel, check, reset } = useChecker();
+  const { violations: liveViolations, loading: checkLoading, error: checkError,
+          result: checkResult, activeModel, check, reset, setViolations } = useChecker();
+
+  // On mount: restore violations from localStorage into the checker
+  useEffect(() => {
+    if (savedViolations.length > 0) {
+      setViolations(savedViolations);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keep savedViolations in sync whenever live violations change
+  useEffect(() => {
+    if (liveViolations.length > 0) {
+      setSavedViolations(liveViolations);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveViolations]);
+
+  const violations = liveViolations.length > 0 ? liveViolations : savedViolations;
 
   const spanRefs = useRef<Map<string, HTMLSpanElement>>(new Map());
 
@@ -341,6 +335,22 @@ export default function Workbench() {
     info:     violations.filter(v => v.severity === "info").length,
   }), [violations]);
 
+  const hasDraft = docHtml.length > 0 || docText.length > 0;
+
+  // ── Clear all draft data ─────────────────────────────────────────────────────
+  function handleClearDraft() {
+    clearDocName(); clearDocHtml(); clearDocText();
+    clearActivePolicyId(); clearCatFilter(); clearSevFilter();
+    clearSavedViolations();
+    clearStorageByPrefix(LS);
+    reset();
+    setSelected(null);
+    setEditMode(false);
+    setPanel("violations");
+    setClearDialogOpen(false);
+    toast({ title: "Черновик очищен", description: "Все локальные данные удалены." });
+  }
+
   async function fetchPolicies() {
     try {
       const res  = await apiRequest("GET", "/api/policies");
@@ -348,6 +358,24 @@ export default function Workbench() {
       setPolicies(data);
     } catch (_) {}
   }
+
+  // Fetch policies + restore saved rules on mount
+  useEffect(() => {
+    fetchPolicies();
+  }, []);
+
+  // When activePolicyId is restored from LS, also fetch its rules
+  const prevPolicyId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activePolicyId || activePolicyId === prevPolicyId.current) return;
+    prevPolicyId.current = activePolicyId;
+    apiRequest("GET", `/api/policies/${activePolicyId}`)
+      .then(r => r.json())
+      .then((data: PolicyDocument) => {
+        if (data?.rules?.length) setPolicyRules(data.rules);
+      })
+      .catch(() => {});
+  }, [activePolicyId]);
 
   async function handlePolicyFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -405,6 +433,7 @@ export default function Workbench() {
     setDocText(imported.text);
     setEditMode(false);
     reset();
+    clearSavedViolations();
     setSelected(null);
     e.target.value = "";
   }
@@ -422,7 +451,7 @@ export default function Workbench() {
       setDocHtml(html);
       setDocText(text);
       setEditMode(false);
-      reset(); setSelected(null); setLinkDialogOpen(false); setLinkUrl("");
+      reset(); clearSavedViolations(); setSelected(null); setLinkDialogOpen(false); setLinkUrl("");
     } catch (err) {
       toast({ title: "Ошибка", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
     } finally {
@@ -514,6 +543,12 @@ export default function Workbench() {
           <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
           <span className="font-medium truncate">{docName}</span>
           {editMode && <Badge variant="outline" className="text-[10px] ml-1 shrink-0">Редактирование</Badge>}
+          {hasDraft && !editMode && (
+            <Badge variant="secondary" className="text-[10px] ml-1 shrink-0 gap-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70" />
+              Сохранено
+            </Badge>
+          )}
         </div>
         <div className="ml-auto flex items-center gap-2 shrink-0">
           <input ref={fileDocInput}    type="file" accept=".docx,.pdf,.txt,.md" onChange={handleDocFile}    className="hidden" />
@@ -549,6 +584,17 @@ export default function Workbench() {
           >
             <Sparkles className="h-4 w-4 mr-1.5" />{checkLoading ? "Проверка…" : "Проверить"}
           </Button>
+
+          {hasDraft && (
+            <Button
+              variant="ghost" size="sm"
+              className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+              onClick={() => setClearDialogOpen(true)}
+              title="Очистить черновик"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          )}
 
           <Button variant="ghost" size="icon" onClick={toggle}>
             {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
@@ -589,6 +635,25 @@ export default function Workbench() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>Отмена</Button>
             <Button onClick={handleUrlImport} disabled={linkLoading || !linkUrl.trim()}>{linkLoading ? "Загрузка…" : "Импортировать"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Clear draft confirmation dialog */}
+      <Dialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Очистить черновик?</DialogTitle>
+            <DialogDescription>
+              Документ, текст и результаты проверки будут удалены из локального
+              хранилища браузера. Загруженные политики останутся на сервере.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClearDialogOpen(false)}>Отмена</Button>
+            <Button variant="destructive" onClick={handleClearDraft}>
+              <Trash2 className="h-4 w-4 mr-1.5" />Очистить
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
