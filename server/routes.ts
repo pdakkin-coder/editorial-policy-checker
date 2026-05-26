@@ -13,13 +13,49 @@
 import express, { type Express } from "express";
 import multer from "multer";
 import mammoth from "mammoth";
+import pdfParse from "pdf-parse";
 import { randomUUID } from "crypto";
 import { parsePolicy } from "./policyParser.js";
 import { checkDocument } from "./documentChecker.js";
 import { savePolicy, getPolicy, listPolicies, deletePolicy } from "./storage.js";
 import type { CheckDocumentRequest, PolicyDocument } from "../shared/types.js";
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+const LOG    = "[routes]";
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+/** Extract plain text from an uploaded file buffer based on MIME / extension. */
+async function extractText(buffer: Buffer, originalname: string, mimetype: string): Promise<string> {
+  const name = originalname.toLowerCase();
+
+  // .docx
+  if (mimetype.includes("wordprocessingml") || name.endsWith(".docx")) {
+    const r = await mammoth.extractRawText({ buffer });
+    console.info(`${LOG} mammoth extracted ${r.value.length} chars from docx`);
+    return r.value;
+  }
+
+  // .pdf
+  if (mimetype === "application/pdf" || name.endsWith(".pdf")) {
+    const r = await pdfParse(buffer);
+    console.info(`${LOG} pdf-parse extracted ${r.text.length} chars, ${r.numpages} pages`);
+    if (!r.text.trim()) {
+      throw new Error(
+        `PDF не содержит извлекаемого текста (возможно, это скан). ` +
+        `Попробуйте скопировать текст вручную.`
+      );
+    }
+    return r.text;
+  }
+
+  // .txt / plain text
+  if (mimetype.startsWith("text/") || name.endsWith(".txt") || name.endsWith(".md")) {
+    return buffer.toString("utf-8");
+  }
+
+  // fallback — попробовать как UTF-8
+  console.warn(`${LOG} unknown mime "${mimetype}" for "${originalname}" — trying UTF-8`);
+  return buffer.toString("utf-8");
+}
 
 export function registerRoutes(app: Express): void {
   // ── Upload policy document ────────────────────────────────────────────────
@@ -30,15 +66,13 @@ export function registerRoutes(app: Express): void {
 
       if (req.file) {
         name = req.file.originalname.replace(/\.[^.]+$/, "");
-        if (req.file.mimetype.includes("wordprocessingml") || req.file.originalname.endsWith(".docx")) {
-          const r = await mammoth.extractRawText({ buffer: req.file.buffer });
-          rawText = r.value;
-        } else {
-          rawText = req.file.buffer.toString("utf-8");
-        }
+        console.info(`${LOG} upload: "${req.file.originalname}" (${req.file.mimetype}, ${req.file.size} bytes)`);
+        rawText = await extractText(req.file.buffer, req.file.originalname, req.file.mimetype);
+        console.info(`${LOG} extracted text: ${rawText.length} chars`);
       } else if (req.body?.rawText) {
         rawText = req.body.rawText;
         name    = req.body.name ?? name;
+        console.info(`${LOG} upload via JSON body: ${rawText.length} chars`);
       } else {
         return res.status(400).json({ message: "Файл или текст не предоставлен" });
       }
@@ -54,6 +88,7 @@ export function registerRoutes(app: Express): void {
       savePolicy(doc);
       return res.json(doc);
     } catch (err) {
+      console.error(`${LOG} upload error:`, err instanceof Error ? err.message : err);
       return res.status(500).json({ message: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -83,6 +118,7 @@ export function registerRoutes(app: Express): void {
     if (!process.env.GEMINI_API_KEY) {
       return res.status(501).json({ message: "GEMINI_API_KEY не задан" });
     }
+    console.info(`${LOG} /parse triggered for "${doc.name}" (${doc.rawText.length} chars of text)`);
     const result = await parsePolicy({ rawText: doc.rawText, name: doc.name });
     if (result.error) return res.status(502).json(result);
     doc.rules    = result.rules;
