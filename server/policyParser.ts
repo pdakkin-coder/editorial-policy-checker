@@ -9,46 +9,86 @@ import type { ParsePolicyRequest, ParsePolicyResponse, PolicyRule } from "../sha
 
 const LOG = "[policy-parser]";
 
-const SYSTEM_INSTRUCTION = `Ты — редактор и лингвист. Твоя задача — разобрать документ редакционной политики
-и вернуть строго JSON без markdown-блоков. Формат:
+// 20к символов ≈ 10-12 страниц — достаточно для редполитики
+const MAX_CHARS = 20_000;
+
+function buildPrompt(name: string, text: string): string {
+  return `\
+Ты — опытный редактор и лингвист. Проанализируй текст редакционной политики и извлеки из него правила.
+
+ДОКУМЕНТ: «${name}»
+
+ТЕКСТ ПОЛИТИКИ:
+---
+${text}
+---
+
+ВЕРНИ СТРОГО JSON (без markdown-блоков и объяснений) в формате:
 {
   "rules": [
     {
       "id": "rule-1",
-      "category": "stop-word" | "style" | "abbreviation" | "tone" | "structure" | "typography" | "factual" | "custom",
-      "name": "Краткое название",
-      "description": "Подробное объяснение правила (2-4 предложения)",
-      "severity": "error" | "warning" | "info",
-      "examples": [{"bad": "...", "good": "..."}],
-      "source": "п. X.X"
+      "category": "stop-word",
+      "name": "Краткое название правила",
+      "description": "Подробное описание",
+      "severity": "error",
+      "examples": [{"bad": "пример нарушения", "good": "правильный вариант"}],
+      "source": "ссылка на раздел"
     }
   ],
   "summary": "Краткое описание политики"
 }
-Категории: stop-word — запрещённые слова/обороты; style — стилистика; abbreviation — сокращения;
-tone — тональность; structure — структура текста; typography — типографика; factual — фактические нормы;
-custom — прочие правила.`;
+
+Категории (category):
+  stop-word    — запрещённые слова/обороты
+  style        — стилистика и оформление
+  tone         — тональность и голос
+  structure    — структура текста
+  typography   — типографика и пунктуация
+  abbreviation — сокращения
+  factual      — фактические нормы
+  custom       — прочие правила
+
+ВАЖНО:
+- ИГНОРИРУЙ метаданные PDF (format, version, page_count и т.) — работай только с содержимым текста
+- Извлекай ВСЕ правила, даже неявные
+- ОТВЕТ ДОЛЖЕН НАЧИНАТЬСЯ С { И ЗАКАНЧИВАТЬСЯ НА }
+`;
+}
+
+/**
+ * Извлекает первый JSON-объект из строки:
+ * - убирает ```json ... ``` / ``` ... ``` обёртки
+ * - находит первый { и последний } на случай преамбулы
+ */
+function extractJson(raw: string): string {
+  let s = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
+  const start = s.indexOf("{");
+  const end   = s.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    s = s.slice(start, end + 1);
+  }
+  return s;
+}
 
 export async function parsePolicy(
   req: ParsePolicyRequest,
 ): Promise<ParsePolicyResponse> {
-  const apiKey = process.env.GEMINI_API_KEY!;
-  const userText = `Документ редакционной политики «${req.name}»:\n\n${req.rawText.slice(0, 12000)}`;
+  const apiKey  = process.env.GEMINI_API_KEY!;
+  const docText = req.rawText.slice(0, MAX_CHARS);
 
-  console.info(`${LOG} starting parse «${req.name}» (${req.rawText.length} chars)`);
+  console.info(`${LOG} starting parse «${req.name}» (${req.rawText.length} chars total, sending ${docText.length})`);
 
   const contents = [
-    { role: "user", parts: [{ text: userText }] },
+    { role: "user", parts: [{ text: buildPrompt(req.name, docText) }] },
   ];
-  const generationConfig = {
-    temperature:      0.2,
-    responseMimeType: "application/json",
-  };
+
+  // Не используем responseMimeType — нестабильно работает на lite-моделях
+  const generationConfig = { temperature: 0.2 };
 
   try {
     const result = await callGemini(contents, generationConfig, apiKey);
 
-    // ── Логирование сырого ответа ─────────────────────────────────────────
     console.info(`${LOG} raw response from ${result.model} (${result.raw.length} chars):`);
     console.info(`${LOG} --- RAW START ---`);
     console.info(result.raw.slice(0, 3000));
@@ -56,13 +96,15 @@ export async function parsePolicy(
       console.info(`${LOG} ... [truncated, total ${result.raw.length} chars]`);
     console.info(`${LOG} --- RAW END ---`);
 
-    // ── Парсинг JSON ─────────────────────────────────────────────────────
+    const jsonStr = extractJson(result.raw);
+    console.info(`${LOG} extracted JSON (${jsonStr.length} chars)`);
+
     let parsed: { rules: PolicyRule[]; summary?: string };
     try {
-      parsed = JSON.parse(result.raw) as { rules: PolicyRule[]; summary?: string };
+      parsed = JSON.parse(jsonStr) as { rules: PolicyRule[]; summary?: string };
     } catch (jsonErr) {
       console.error(`${LOG} JSON.parse FAILED:`, jsonErr instanceof Error ? jsonErr.message : jsonErr);
-      console.error(`${LOG} first 500 chars of raw: ${result.raw.slice(0, 500)}`);
+      console.error(`${LOG} first 500 chars of extracted: ${jsonStr.slice(0, 500)}`);
       throw new Error(
         `JSON parse error: ${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}. ` +
         `Raw (first 200): ${result.raw.slice(0, 200)}`
