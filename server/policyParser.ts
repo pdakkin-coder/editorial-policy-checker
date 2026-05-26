@@ -1,7 +1,5 @@
 /**
  * policyParser.ts
- * Принимает rawText редакционной политики и возвращает
- * структурированный массив PolicyRule через Gemini.
  */
 
 import { callGemini } from "./geminiRouter.js";
@@ -9,90 +7,77 @@ import type { ParsePolicyRequest, ParsePolicyResponse, PolicyRule } from "../sha
 
 const LOG = "[policy-parser]";
 
-// 20к символов ≈ 10-12 страниц — достаточно для редполитики
-const MAX_CHARS = 20_000;
-
 function buildPrompt(name: string, text: string): string {
   return `\
-Ты — опытный редактор и лингвист. Проанализируй текст редакционной политики и извлеки из него правила.
+Ty opytnyy redaktor i lingvist. Tvoya zadacha — izvlechʹ VSE pravila iz dokumenta redaktsionnoy politiki.
 
-ДОКУМЕНТ: «${name}»
+NAZVANIE DOKUMENTA: ${name}
 
-ТЕКСТ ПОЛИТИКИ:
----
+POLNYY TEKST DOKUMENTA:
+===BEGIN===
 ${text}
----
+===END===
 
-ВЕРНИ СТРОГО JSON (без markdown-блоков и объяснений) в формате:
+Zadacha: proanaliziruy kazhdyy razdel dokumenta i izvleki iz nego redaktsionnye pravila.
+Pravilo — eto lyuboe trebovaniye k tekstam: zapreshchonnye slova, stilistika, ton, tipografika,
+struktura materiala, trebovaniya k zagolovkam, abzatsam, ssylkam, izobrazeniyam, tsitirovanniyu i t.d.
+
+VERNI TOLʹKO JSON (bez ```markdown blokov, bez obʹyasneniy do ili posle).
+Format otveta:
 {
   "rules": [
     {
       "id": "rule-1",
-      "category": "stop-word",
-      "name": "Краткое название правила",
-      "description": "Подробное описание",
-      "severity": "error",
-      "examples": [{"bad": "пример нарушения", "good": "правильный вариант"}],
-      "source": "ссылка на раздел"
+      "category": "<odno iz: stop-word | style | tone | structure | typography | abbreviation | factual | custom>",
+      "name": "<kratkoe nazvanie pravila>",
+      "description": "<podrobnoe opisanie 2-4 predlozeniya>",
+      "severity": "<odno iz: error | warning | info>",
+      "examples": [
+        { "bad": "<primer narusheniya>", "good": "<pravilnyy variant>" }
+      ],
+      "source": "<ssylka na razdel dokumenta ili pustaya stroka>"
     }
   ],
-  "summary": "Краткое описание политики"
+  "summary": "<2-3 predlozeniya: o chom eta politika i dlya kakikh tekstov>"
 }
 
-Категории (category):
-  stop-word    — запрещённые слова/обороты
-  style        — стилистика и оформление
-  tone         — тональность и голос
-  structure    — структура текста
-  typography   — типографика и пунктуация
-  abbreviation — сокращения
-  factual      — фактические нормы
-  custom       — прочие правила
-
-ВАЖНО:
-- ИГНОРИРУЙ метаданные PDF (format, version, page_count и т.) — работай только с содержимым текста
-- Извлекай ВСЕ правила, даже неявные
-- ОТВЕТ ДОЛЖЕН НАЧИНАТЬСЯ С { И ЗАКАНЧИВАТЬСЯ НА }
+VAZHNO:
+1. Otvet DOLZHEN nachinatsya s { i zakanchivatsya na } — nichego lishnego
+2. Ignoriruй lyubye PDF-metadannye (format, version, page_count, producer i t.p.)
+3. Esli v razdele net yavnykh pravil — sformuliruй ikh iz smysla teksta
+4. Izvleki minimum 5 pravil esli dokument soderzhit khoby redaktsionnye trebovaniya
 `;
 }
 
-/**
- * Извлекает первый JSON-объект из строки:
- * - убирает ```json ... ``` / ``` ... ``` обёртки
- * - находит первый { и последний } на случай преамбулы
- */
 function extractJson(raw: string): string {
   let s = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
   const start = s.indexOf("{");
   const end   = s.lastIndexOf("}");
-  if (start !== -1 && end !== -1 && end > start) {
-    s = s.slice(start, end + 1);
-  }
+  if (start !== -1 && end !== -1 && end > start) s = s.slice(start, end + 1);
   return s;
 }
 
 export async function parsePolicy(
   req: ParsePolicyRequest,
 ): Promise<ParsePolicyResponse> {
-  const apiKey  = process.env.GEMINI_API_KEY!;
-  const docText = req.rawText.slice(0, MAX_CHARS);
+  const apiKey = process.env.GEMINI_API_KEY!;
 
-  console.info(`${LOG} starting parse «${req.name}» (${req.rawText.length} chars total, sending ${docText.length})`);
+  // Отправляем полный текст без обрезки
+  const docText = req.rawText;
+  console.info(`${LOG} starting parse «${req.name}» (${docText.length} chars)`);
 
   const contents = [
     { role: "user", parts: [{ text: buildPrompt(req.name, docText) }] },
   ];
-
-  // Не используем responseMimeType — нестабильно работает на lite-моделях
-  const generationConfig = { temperature: 0.2 };
+  const generationConfig = { temperature: 0.1 };
 
   try {
     const result = await callGemini(contents, generationConfig, apiKey);
 
     console.info(`${LOG} raw response from ${result.model} (${result.raw.length} chars):`);
     console.info(`${LOG} --- RAW START ---`);
-    console.info(result.raw.slice(0, 3000));
-    if (result.raw.length > 3000)
+    console.info(result.raw.slice(0, 4000));
+    if (result.raw.length > 4000)
       console.info(`${LOG} ... [truncated, total ${result.raw.length} chars]`);
     console.info(`${LOG} --- RAW END ---`);
 
@@ -104,7 +89,7 @@ export async function parsePolicy(
       parsed = JSON.parse(jsonStr) as { rules: PolicyRule[]; summary?: string };
     } catch (jsonErr) {
       console.error(`${LOG} JSON.parse FAILED:`, jsonErr instanceof Error ? jsonErr.message : jsonErr);
-      console.error(`${LOG} first 500 chars of extracted: ${jsonStr.slice(0, 500)}`);
+      console.error(`${LOG} extracted snippet: ${jsonStr.slice(0, 500)}`);
       throw new Error(
         `JSON parse error: ${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}. ` +
         `Raw (first 200): ${result.raw.slice(0, 200)}`
@@ -115,20 +100,13 @@ export async function parsePolicy(
     console.info(`${LOG} parsed OK — ${ruleCount} rules, summary: ${parsed.summary?.slice(0, 80) ?? "(none)"}`);
 
     if (ruleCount === 0) {
-      console.warn(`${LOG} WARNING: 0 rules extracted. Full parsed object:`);
+      console.warn(`${LOG} WARNING: 0 rules. Full object:`);
       console.warn(JSON.stringify(parsed, null, 2).slice(0, 1000));
     }
 
-    return {
-      rules:   parsed.rules ?? [],
-      summary: parsed.summary,
-      _label:  result.label,
-    };
+    return { rules: parsed.rules ?? [], summary: parsed.summary, _label: result.label };
   } catch (err) {
-    console.error(`${LOG} parsePolicy ERROR:`, err instanceof Error ? err.message : err);
-    return {
-      rules: [],
-      error: err instanceof Error ? err.message : String(err),
-    };
+    console.error(`${LOG} ERROR:`, err instanceof Error ? err.message : err);
+    return { rules: [], error: err instanceof Error ? err.message : String(err) };
   }
 }
