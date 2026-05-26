@@ -90,8 +90,7 @@ export default function Workbench() {
   const [selected, setSelected] = useState<{ start: number; end: number } | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
-  // Policy state
-  const [policies, setPolicies]     = useState<Pick<PolicyDocument, "id" | "name" | "uploadedAt"> & { ruleCount: number; aiParsed: boolean }[]>([]);
+  const [policies, setPolicies]     = useState<(Pick<PolicyDocument, "id" | "name" | "uploadedAt"> & { ruleCount: number; aiParsed: boolean })[]>([]);
   const [activePolicyId, setActivePolicyId] = useState<string | null>(null);
   const [policyRules, setPolicyRules] = useState<PolicyDocument["rules"]>([]);
   const [policyLoading, setPolicyLoading] = useState(false);
@@ -108,7 +107,6 @@ export default function Workbench() {
 
   const spanRefs = useRef<Map<string, HTMLSpanElement>>(new Map());
 
-  // ── Document segments ───────────────────────────────────────────────────
   const segments = useMemo(() => {
     if (!docText || violations.length === 0) return [{ kind: "plain" as const, text: docText, start: 0, end: docText.length }];
     type Seg = { kind: "plain" | "ann"; text: string; start: number; end: number; violation?: PolicyViolation };
@@ -125,7 +123,6 @@ export default function Workbench() {
     return segs;
   }, [docText, violations]);
 
-  // ── Filtered violations ─────────────────────────────────────────────────
   const filteredViolations = useMemo(() => violations.filter(v => {
     if (catFilter !== "all" && v.category !== catFilter) return false;
     if (sevFilter !== "all" && v.severity !== sevFilter) return false;
@@ -139,7 +136,6 @@ export default function Workbench() {
     info:     violations.filter(v => v.severity === "info").length,
   }), [violations]);
 
-  // ── Fetch policy list ────────────────────────────────────────────────────
   async function fetchPolicies() {
     try {
       const res  = await apiRequest("GET", "/api/policies");
@@ -148,7 +144,6 @@ export default function Workbench() {
     } catch (_) {}
   }
 
-  // ── Upload policy file ───────────────────────────────────────────────────
   async function handlePolicyFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -157,8 +152,8 @@ export default function Workbench() {
       const formData = new FormData();
       formData.append("file", file);
       const res  = await fetch("/api/policies/upload", { method: "POST", body: formData });
-      const data = await res.json() as { id: string; name: string; uploadedAt: string; ruleCount: number; aiParsed: boolean };
-      if (!res.ok) throw new Error((data as { message?: string }).message ?? "Ошибка загрузки");
+      const data = await res.json() as { id: string; name: string; uploadedAt: string; ruleCount: number; aiParsed: boolean; message?: string };
+      if (!res.ok) throw new Error(data.message ?? "Ошибка загрузки");
       await fetchPolicies();
       setActivePolicyId(data.id);
       toast({ title: "Политика загружена", description: `«${data.name}» — запустите AI-парсинг правил.` });
@@ -166,10 +161,10 @@ export default function Workbench() {
       toast({ title: "Ошибка", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
     } finally {
       setPolicyLoading(false);
+      e.target.value = "";
     }
   }
 
-  // ── Parse policy rules via AI ────────────────────────────────────────────
   async function handleParsePolicy() {
     if (!activePolicyId) return;
     setPolicyLoading(true);
@@ -188,17 +183,27 @@ export default function Workbench() {
     }
   }
 
-  // ── Import document file ─────────────────────────────────────────────────
+  // ── Import document file (.docx / .pdf / .txt / .md) ─────────────────────
   async function handleDocFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     const imported = await importFile(file);
-    if (!imported.text) { toast({ title: "Импорт не удался", description: imported.warnings[0], variant: "destructive" }); return; }
-    setDocName(imported.name); setDocText(imported.text); setDraft(imported.text);
-    reset(); setSelected(null);
+    if (!imported.text) {
+      toast({ title: "Импорт не удался", description: imported.warnings[0] ?? "Неизвестная ошибка", variant: "destructive" });
+      e.target.value = "";
+      return;
+    }
+    if (imported.warnings.length) {
+      toast({ title: "Файл загружен", description: imported.warnings.join(" ") });
+    }
+    setDocName(imported.name);
+    setDocText(imported.text);
+    setDraft(imported.text);
+    reset();
+    setSelected(null);
+    e.target.value = "";
   }
 
-  // ── Import by URL ────────────────────────────────────────────────────────
   async function handleUrlImport() {
     if (!linkUrl.trim()) return;
     setLinkLoading(true);
@@ -215,7 +220,6 @@ export default function Workbench() {
     }
   }
 
-  // ── Run check ────────────────────────────────────────────────────────────
   async function handleCheck() {
     if (!docText.trim() || !activePolicyId) return;
     await check(docText, activePolicyId);
@@ -232,7 +236,7 @@ export default function Workbench() {
   return (
     <div className="flex flex-col h-screen bg-background text-foreground">
 
-      {/* ── Header ──────────────────────────────────────────────────────── */}
+      {/* ── Header ────────────────────────────────────────────────────── */}
       <header className="h-14 border-b flex items-center px-4 gap-3 shrink-0 bg-background/80 backdrop-blur">
         <span className="text-primary"><EPCLogo size={30} /></span>
         <div className="leading-none select-none">
@@ -245,8 +249,10 @@ export default function Workbench() {
           <span className="font-medium truncate max-w-[28ch]">{docName}</span>
         </div>
         <div className="ml-auto flex items-center gap-2 shrink-0">
-          <input ref={fileDocInput} type="file" accept=".docx,.txt,.md" onChange={handleDocFile} className="hidden" />
-          <input ref={filePolicyInput} type="file" accept=".docx,.txt,.md,.pdf" onChange={handlePolicyFile} className="hidden" />
+          {/* Документ: docx, pdf, txt, md */}
+          <input ref={fileDocInput} type="file" accept=".docx,.pdf,.txt,.md" onChange={handleDocFile} className="hidden" />
+          {/* Политика: docx, pdf, txt, md */}
+          <input ref={filePolicyInput} type="file" accept=".docx,.pdf,.txt,.md" onChange={handlePolicyFile} className="hidden" />
           <Button variant="outline" size="sm" onClick={() => fileDocInput.current?.click()}>
             <Upload className="h-4 w-4 mr-1.5" />Документ
           </Button>
@@ -266,7 +272,7 @@ export default function Workbench() {
         </div>
       </header>
 
-      {/* ── AI status bar ───────────────────────────────────────────────── */}
+      {/* ── AI status bar ─────────────────────────────────────────────── */}
       {(checkLoading || checkResult || checkError) && (
         <div className="h-7 border-b px-4 flex items-center gap-2 text-[11px] bg-muted/40">
           <Sparkles className="h-3.5 w-3.5 text-primary shrink-0" />
@@ -287,12 +293,12 @@ export default function Workbench() {
         </div>
       )}
 
-      {/* ── URL dialog ──────────────────────────────────────────────────── */}
+      {/* ── URL dialog ─────────────────────────────────────────────────── */}
       <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Импорт по ссылке</DialogTitle>
-            <DialogDescription>Публичная ссылка на .docx, .txt, .md или Google Docs.</DialogDescription>
+            <DialogDescription>Публичная ссылка на .docx, .pdf, .txt, .md или Google Docs.</DialogDescription>
           </DialogHeader>
           <Input placeholder="https://…" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleUrlImport()} />
           <DialogFooter>
@@ -302,7 +308,7 @@ export default function Workbench() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Main layout ─────────────────────────────────────────────────── */}
+      {/* ── Main layout ────────────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0">
 
         {/* Left sidebar */}
@@ -394,7 +400,7 @@ export default function Workbench() {
                   <div className="flex flex-col items-center justify-center h-full min-h-[60vh] text-center text-muted-foreground gap-3">
                     <FileText className="h-12 w-12 opacity-20" />
                     <p className="text-sm">Загрузите документ для проверки</p>
-                    <p className="text-xs">Поддерживаются .docx, .txt, .md или Google Docs по ссылке</p>
+                    <p className="text-xs">Поддерживаются .docx, .pdf, .txt, .md или Google Docs по ссылке</p>
                   </div>
                 )}
               </div>
@@ -420,14 +426,12 @@ export default function Workbench() {
           <ScrollArea className="flex-1">
             <div className="p-4">
 
-              {/* Violations panel */}
               {panel === "violations" && (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <h2 className="text-sm font-semibold">Нарушения</h2>
                     <Badge variant="outline" className="text-[10px]">{violations.length}</Badge>
                   </div>
-
                   <div className="flex gap-1.5">
                     <Select value={catFilter} onValueChange={setCatFilter}>
                       <SelectTrigger className="h-7 flex-1 text-xs"><SelectValue /></SelectTrigger>
@@ -446,7 +450,6 @@ export default function Workbench() {
                       </SelectContent>
                     </Select>
                   </div>
-
                   {filteredViolations.length === 0 ? (
                     <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
                       <CheckCircle2 className="h-8 w-8 opacity-30" />
@@ -485,7 +488,6 @@ export default function Workbench() {
                 </div>
               )}
 
-              {/* Rules panel */}
               {panel === "rules" && (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
@@ -519,7 +521,6 @@ export default function Workbench() {
                 </div>
               )}
 
-              {/* Stats panel */}
               {panel === "stats" && (
                 <div className="space-y-3">
                   <h2 className="text-sm font-semibold">Статистика проверки</h2>
