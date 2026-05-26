@@ -2,9 +2,6 @@ import express from "express";
 import path from "path";
 import { registerRoutes } from "./routes.js";
 
-// Примечание: tsx автоматически загружает .env (строка '◇ injected env from .env' в логе).
-// require("dotenv") был удалён, так как перезаписывал PORT после того как tsx его уже загрузил.
-
 (async () => {
   const app = express();
   app.use(express.json({ limit: "10mb" }));
@@ -38,7 +35,11 @@ import { registerRoutes } from "./routes.js";
   }
 
   const PORT = Number(process.env.PORT ?? 5000);
-  app.listen(PORT, () =>
-    console.log(`[epc] server listening on http://localhost:${PORT}`)
-  );
+  const HOST = process.env.HOST ?? "0.0.0.0";
+
+  app.listen(PORT, HOST, () => {
+    const displayHost = HOST === "0.0.0.0" ? "localhost" : HOST;
+    console.log(`[epc] server listening on http://${displayHost}:${PORT}`);
+    console.log(`[epc] network access: http://${process.env.LOCAL_IP ?? displayHost}:${PORT}`);
+  });
 })();
