@@ -80,14 +80,32 @@ function legendDotClass(v: PolicyViolation): string {
 }
 
 // ── DOM text node collector ───────────────────────────────────────────────────
+// IMPORTANT: this function must produce the same offset arithmetic as
+// htmlToText() in importDoc.ts so that violation start/end positions
+// computed by the checker (which receives htmlToText output) map
+// correctly onto the DOM nodes rendered from the same HTML.
+//
+// htmlToText rules (source of truth):
+//   <br>            → "\n"   (+1)
+//   </p>            → "\n"   (+1)
+//   </h1-6>         → "\n"   (+1)
+//   </li>           → "\n"   (+1)
+//   all other tags  → ""     (+0)
+//
+// Therefore collectTextNodes must add +1 only at:
+//   - a <BR> element (counts as a newline character)
+//   - the END of a P / H1-H6 / LI element
+// and must NOT add anything at the START of any element.
 function collectTextNodes(
   container: HTMLElement,
 ): { node: Text; start: number; end: number }[] {
-  const BLOCK_TAGS = new Set(["P","H1","H2","H3","H4","H5","H6","LI","DIV","BR","TR"]);
+  // Tags whose closing position inserts a virtual "\n" (+1)
+  const NEWLINE_CLOSE_TAGS = new Set(["P","H1","H2","H3","H4","H5","H6","LI"]);
+
   const result: { node: Text; start: number; end: number }[] = [];
   let offset = 0;
 
-  function walk(node: Node, isFirst: boolean) {
+  function walk(node: Node) {
     if (node.nodeType === Node.TEXT_NODE) {
       const t = node as Text;
       const len = t.textContent?.length ?? 0;
@@ -98,15 +116,25 @@ function collectTextNodes(
       return;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
-    const el = node as HTMLElement;
+    const el  = node as HTMLElement;
     const tag = el.tagName;
-    if (!isFirst && BLOCK_TAGS.has(tag)) { offset += 1; }
-    const children = Array.from(el.childNodes);
-    children.forEach((child, i) => walk(child, isFirst && i === 0));
-    if (BLOCK_TAGS.has(tag)) { offset += 1; }
+
+    // <BR> is self-closing and represents a single "\n" character
+    if (tag === "BR") {
+      offset += 1;
+      return;
+    }
+
+    // Recurse into children
+    el.childNodes.forEach((child) => walk(child));
+
+    // After closing a block tag that htmlToText converts to "\n"
+    if (NEWLINE_CLOSE_TAGS.has(tag)) {
+      offset += 1;
+    }
   }
 
-  walk(container, true);
+  walk(container);
   return result;
 }
 
@@ -419,7 +447,9 @@ export default function Workbench() {
     }
     setDocName(imported.name);
     setDocHtml(imported.html);
-    setDocText(imported.text);
+    // Always derive docText from HTML via the canonical htmlToText so that
+    // stored offsets are always consistent with the DOM rendering.
+    setDocText(htmlToText(imported.html));
     setEditMode(false);
     reset();
     clearSavedViolations();
@@ -435,7 +465,8 @@ export default function Workbench() {
       const data = await res.json() as { text?: string; html?: string; name?: string; message?: string };
       if (!res.ok) throw new Error(data.message ?? `HTTP ${res.status}`);
       const html = data.html ?? "";
-      const text = data.text ?? htmlToText(html);
+      // Always derive plain text from HTML for offset consistency.
+      const text = htmlToText(html);
       setDocName(data.name ?? "документ");
       setDocHtml(html);
       setDocText(text);
@@ -449,16 +480,28 @@ export default function Workbench() {
   }
 
   async function handleCheck() {
-    if (!docText.trim() || !activePolicyId) return;
+    if (!activePolicyId) return;
+
+    let htmlToCheck: string;
+    let textToCheck: string;
+
     if (editMode && editorRef.current) {
-      const latestHtml = editorRef.current.getHtml();
-      const latestText = editorRef.current.getText();
-      setDocHtml(latestHtml);
-      setDocText(latestText);
-      await check(latestText, activePolicyId);
+      htmlToCheck = editorRef.current.getHtml();
+      setDocHtml(htmlToCheck);
     } else {
-      await check(docText, activePolicyId);
+      htmlToCheck = docHtml;
     }
+
+    if (!htmlToCheck.trim()) return;
+
+    // Always recompute plain text from the current HTML right before
+    // passing it to the checker. This guarantees that the offset
+    // coordinate system used by heuristicChecker / AI is identical
+    // to what collectTextNodes will reconstruct from the same HTML.
+    textToCheck = htmlToText(htmlToCheck);
+    setDocText(textToCheck);
+
+    await check(textToCheck, activePolicyId);
     setEditMode(false);
     setPanel("violations");
   }
@@ -514,7 +557,8 @@ export default function Workbench() {
 
   function handleEditorChange(html: string, text: string) {
     setDocHtml(html);
-    setDocText(text);
+    // Keep docText in sync using canonical htmlToText
+    setDocText(htmlToText(html));
   }
 
   return (
@@ -569,7 +613,7 @@ export default function Workbench() {
           <Button
             variant="default" size="sm"
             onClick={handleCheck}
-            disabled={checkLoading || !docText.trim() || !activePolicyId || policyRules.length === 0}
+            disabled={checkLoading || !docHtml.trim() || !activePolicyId || policyRules.length === 0}
           >
             <Sparkles className="h-4 w-4 mr-1.5" />{checkLoading ? "Проверка…" : "Проверить"}
           </Button>
