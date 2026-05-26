@@ -1,14 +1,22 @@
 /**
  * geminiRouter.ts — Gemini model cascade with circuit-breaker
  *
- * Cascade order:
- *   1. gemini-2.5-flash-preview-05-20  — primary (smart, handles long docs)
- *   2. gemini-2.0-flash                — fallback-1
- *   3. gemini-1.5-flash                — fallback-2
+ * Cascade order (original 2026-05-25):
+ *   1. gemini-3.1-flash-lite  — 15 RPM, 500 RPD  (primary — most stable)
+ *   2. gemini-2.5-flash       —  5 RPM,  20 RPD  (fallback-1)
+ *   3. gemini-3.5-flash       —  5 RPM,  20 RPD  (fallback-2)
  *
  * On 429 / 404 / network error: advance to next model in cascade.
  * On 503:                        retry within same model (max 2 retries).
+ * All models exhausted:          throw with UTC-midnight RPD reset hint.
+ *
+ * Circuit-breaker per model:
+ *   After CIRCUIT_TRIP_COUNT consecutive failures (any HTTP error),
+ *   the model is skipped for CIRCUIT_RESET_MS ms to avoid hammering a
+ *   broken endpoint and wasting quota on other models.
  */
+
+// ── Model registry ──────────────────────────────────────────────
 
 export interface ModelMeta {
   id:    string;
@@ -18,9 +26,9 @@ export interface ModelMeta {
 }
 
 export const MODEL_REGISTRY: ModelMeta[] = [
-  { id: "gemini-2.5-flash-preview-05-20", label: "Gemini 2.5 Flash",  rpm: 10, rpd: 500 },
-  { id: "gemini-2.0-flash",               label: "Gemini 2.0 Flash",  rpm: 15, rpd: 1500 },
-  { id: "gemini-1.5-flash",               label: "Gemini 1.5 Flash",  rpm: 15, rpd: 1500 },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", rpm: 15, rpd:  500 },
+  { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash",      rpm:  5, rpd:   20 },
+  { id: "gemini-3.5-flash",      label: "Gemini 3.5 Flash",      rpm:  5, rpd:   20 },
 ];
 
 export const MODELS = MODEL_REGISTRY.map((m) => m.id) as
@@ -28,15 +36,20 @@ export const MODELS = MODEL_REGISTRY.map((m) => m.id) as
 
 export type GeminiModel = (typeof MODELS)[number];
 
+/** Returns the human-readable label for a model ID, or the ID itself. */
 export function modelLabel(modelId: string): string {
   return MODEL_REGISTRY.find((m) => m.id === modelId)?.label ?? modelId;
 }
 
+// ── Constants ──────────────────────────────────────────────
+
 const API_VERSION        = "v1beta";
-const FETCH_TIMEOUT_MS   = 120_000;
+const FETCH_TIMEOUT_MS   = 90_000;
 const RETRY_DELAYS_MS    = [1_500, 4_000] as const;
 const CIRCUIT_TRIP_COUNT = 3;
 const CIRCUIT_RESET_MS   = 60_000;
+
+// ── Circuit-breaker state ───────────────────────────────────────
 
 interface CircuitState {
   failures:     number;
@@ -76,6 +89,8 @@ function isTripped(model: string): boolean {
   }
   return true;
 }
+
+// ── HTTP helpers ────────────────────────────────────────────
 
 async function fetchWithTimeout(
   url: string,
@@ -133,6 +148,8 @@ async function callGeminiModel(
   throw err;
 }
 
+// ── tryModel: single model with retry ───────────────────────────
+
 async function tryModel(
   contents: object[],
   generationConfig: object,
@@ -162,6 +179,8 @@ async function tryModel(
   }
   throw lastError ?? new Error(`Gemini [${model}]: все попытки исчерпаны`);
 }
+
+// ── callGemini: main cascade ───────────────────────────────────
 
 export interface GeminiResult {
   raw:   string;
@@ -198,6 +217,7 @@ export async function callGemini(
 
   throw new Error(
     `Квота исчерпана на всех моделях (${MODELS.join(" → ")}). ` +
-    `RPD сбрасывается в полночь UTC.`,
+    `RPD сбрасывается в полночь UTC. ` +
+    `Подождите до следующего дня или проверьте план: https://aistudio.google.com/app/plan_information`,
   );
 }
