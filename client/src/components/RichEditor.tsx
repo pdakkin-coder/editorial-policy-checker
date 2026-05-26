@@ -2,6 +2,11 @@
  * RichEditor.tsx
  * Contenteditable-based rich text editor with formatting toolbar.
  * Preserves imported HTML structure (headings, bold, italic, lists, etc.).
+ *
+ * Fix: cursor no longer jumps to start on input.
+ * Root cause: useEffect([initialHtml]) was rewriting innerHTML on every
+ * onChange → setDocHtml cycle. Now we skip the rewrite while the editor
+ * is focused (user is actively typing).
  */
 
 import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
@@ -46,10 +51,10 @@ const TOOLBAR_GROUPS: { label: string; items: { title: string; icon: React.React
   {
     label: "Format",
     items: [
-      { title: "Жирный (Ctrl+B)",      icon: <Bold          className="h-4 w-4" />, cmd: { type: "exec", cmd: "bold" } },
-      { title: "Курсив (Ctrl+I)",      icon: <Italic        className="h-4 w-4" />, cmd: { type: "exec", cmd: "italic" } },
-      { title: "Подчёркнутый (Ctrl+U)",icon: <Underline     className="h-4 w-4" />, cmd: { type: "exec", cmd: "underline" } },
-      { title: "Зачёркнутый",          icon: <Strikethrough className="h-4 w-4" />, cmd: { type: "exec", cmd: "strikeThrough" } },
+      { title: "Жирный (Ctrl+B)",       icon: <Bold          className="h-4 w-4" />, cmd: { type: "exec", cmd: "bold" } },
+      { title: "Курсив (Ctrl+I)",       icon: <Italic        className="h-4 w-4" />, cmd: { type: "exec", cmd: "italic" } },
+      { title: "Подчёркнутый (Ctrl+U)", icon: <Underline     className="h-4 w-4" />, cmd: { type: "exec", cmd: "underline" } },
+      { title: "Зачёркнутый",           icon: <Strikethrough className="h-4 w-4" />, cmd: { type: "exec", cmd: "strikeThrough" } },
     ],
   },
   {
@@ -87,27 +92,34 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
   { initialHtml, readOnly = false, onChange, className = "" },
   ref,
 ) {
-  const editorRef = useRef<HTMLDivElement>(null);
+  const editorRef  = useRef<HTMLDivElement>(null);
+  // Track focus so we never overwrite innerHTML while the user is typing
+  const focusedRef = useRef(false);
 
-  // Sync initial HTML once
+  // ── Initial paint ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (editorRef.current && editorRef.current.innerHTML !== initialHtml) {
       editorRef.current.innerHTML = initialHtml;
     }
+  // Run once on mount only
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sync when initialHtml changes (new document loaded)
+  // ── Sync when a NEW document is loaded (initialHtml identity changes) ──────
+  // We only overwrite innerHTML when the editor is NOT focused (i.e. the change
+  // came from outside, not from the user typing).
   const prevHtmlRef = useRef(initialHtml);
   useEffect(() => {
-    if (initialHtml !== prevHtmlRef.current) {
-      prevHtmlRef.current = initialHtml;
-      if (editorRef.current) {
-        editorRef.current.innerHTML = initialHtml;
-      }
+    if (initialHtml === prevHtmlRef.current) return; // same value — nothing to do
+    prevHtmlRef.current = initialHtml;
+    // Skip rewrite while user is actively editing to prevent cursor jump
+    if (focusedRef.current) return;
+    if (editorRef.current) {
+      editorRef.current.innerHTML = initialHtml;
     }
   }, [initialHtml]);
 
+  // ── Imperative API ─────────────────────────────────────────────────────────
   const getHtml = useCallback(() => editorRef.current?.innerHTML ?? "", []);
   const getText = useCallback(() => editorRef.current?.innerText ?? "", []);
   const setHtml = useCallback((html: string) => {
@@ -117,30 +129,33 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
 
   useImperativeHandle(ref, () => ({ getHtml, getText, setHtml, focus }), [getHtml, getText, setHtml, focus]);
 
+  // ── Toolbar command ────────────────────────────────────────────────────────
   const execCmd = useCallback((cmd: Cmd) => {
     if (readOnly) return;
     editorRef.current?.focus();
     if (cmd.type === "exec") {
       document.execCommand(cmd.cmd, false, cmd.arg ?? undefined);
     } else {
-      // Block-level formatting: wrap selection in tag
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return;
-      const range = sel.getRangeAt(0);
-      // Toggle: if already inside this tag, unwrap → p; otherwise wrap
+      const range    = sel.getRangeAt(0);
       const ancestor = range.commonAncestorContainer;
-      const block    = (ancestor instanceof Element ? ancestor : ancestor.parentElement)?.closest(cmd.tag.toLowerCase());
-      if (block) {
-        document.execCommand("formatBlock", false, "p");
-      } else {
-        document.execCommand("formatBlock", false, cmd.tag);
-      }
+      const block    = (ancestor instanceof Element ? ancestor : ancestor.parentElement)
+        ?.closest(cmd.tag.toLowerCase());
+      document.execCommand("formatBlock", false, block ? "p" : cmd.tag);
     }
     if (onChange && editorRef.current) {
       onChange(editorRef.current.innerHTML, editorRef.current.innerText);
     }
   }, [readOnly, onChange]);
 
+  // ── Input handler — fires on every keystroke ───────────────────────────────
+  // IMPORTANT: do NOT call setDocHtml (via onChange) synchronously here and
+  // then immediately consume the new prop back into innerHTML — that is what
+  // caused the cursor-jump loop.  The onChange callback is debounced inside
+  // useLocalStorage (800 ms), but React still re-renders Workbench synchronously
+  // and passes the new initialHtml down before the next paint. The focusedRef
+  // guard in the useEffect above breaks that loop.
   const handleInput = useCallback(() => {
     if (onChange && editorRef.current) {
       onChange(editorRef.current.innerHTML, editorRef.current.innerText);
@@ -148,8 +163,6 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
   }, [onChange]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    // Ctrl+B/I/U are handled natively by contenteditable
-    // Prevent default tab (insert 4 spaces instead)
     if (e.key === "Tab") {
       e.preventDefault();
       document.execCommand("insertHTML", false, "\u00a0\u00a0\u00a0\u00a0");
@@ -212,6 +225,8 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
             readOnly ? "select-text cursor-text" : "cursor-text",
             "font-mono",
           ].join(" ")}
+          onFocus={() => { focusedRef.current = true; }}
+          onBlur={() => { focusedRef.current = false; }}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
         />

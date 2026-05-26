@@ -80,17 +80,31 @@ function legendDotClass(v: PolicyViolation): string {
   return `legend-dot legend-dot-${v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info"}`;
 }
 
-// ── Normalize DOM text to match server plain-text offsets ─────────────────────
+// ── collectTextNodes ──────────────────────────────────────────────────────────
+//
+// Converts the DOM tree inside AnnotatedHtmlView's container into a flat list
+// of { node, start, end } entries where start/end are character offsets in the
+// same space as document.innerText (and therefore the server's documentText).
+//
+// Key invariant that was previously broken:
+//   browser innerText inserts exactly ONE '\n' character AFTER each block
+//   element closes.  The old code added +1 BEFORE walking children AND +1 AFTER,
+//   doubling every block boundary → offsets drifted forward by ~N * blockCount.
+//
+// Fix: remove the pre-block increment entirely; only keep the post-block +1.
+//
 function collectTextNodes(
   container: HTMLElement,
 ): { node: Text; start: number; end: number }[] {
-  const BLOCK_TAGS = new Set(["P","H1","H2","H3","H4","H5","H6","LI","DIV","BR","TR"]);
+  // Tags that browser innerText treats as line-break boundaries (post-close \n)
+  const BLOCK_TAGS = new Set(["P","H1","H2","H3","H4","H5","H6","LI","DIV","TR"]);
+  // BR emits \n inline (not pre/post), handled separately below
   const result: { node: Text; start: number; end: number }[] = [];
   let offset = 0;
 
   function walk(node: Node, isFirst: boolean) {
     if (node.nodeType === Node.TEXT_NODE) {
-      const t = node as Text;
+      const t   = node as Text;
       const len = t.textContent?.length ?? 0;
       if (len > 0) {
         result.push({ node: t, start: offset, end: offset + len });
@@ -99,12 +113,23 @@ function collectTextNodes(
       return;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
-    const el = node as HTMLElement;
+    const el  = node as HTMLElement;
     const tag = el.tagName;
-    if (!isFirst && BLOCK_TAGS.has(tag)) { offset += 1; }
+
+    // <br> → single \n inline (innerText semantics)
+    if (tag === "BR") {
+      offset += 1;
+      return;
+    }
+
+    // Walk children first — NO pre-block increment
     const children = Array.from(el.childNodes);
     children.forEach((child, i) => walk(child, isFirst && i === 0));
-    if (BLOCK_TAGS.has(tag)) { offset += 1; }
+
+    // Post-block: add \n only if NOT the outermost container itself
+    if (BLOCK_TAGS.has(tag) && !isFirst) {
+      offset += 1;
+    }
   }
 
   walk(container, true);
@@ -203,9 +228,9 @@ function AnnotatedHtmlView({
     });
     spanRefs.current.clear();
     if (!violations.length) return;
-    const nodes = collectTextNodes(container);
+    const nodes    = collectTextNodes(container);
     const totalLen = nodes.length > 0 ? nodes[nodes.length - 1].end : 0;
-    const sorted = [...violations]
+    const sorted   = [...violations]
       .filter(v => v.start >= 0 && v.end > v.start && v.end <= totalLen + 10)
       .sort((a, b) => b.start - a.start);
     for (const v of sorted) {
@@ -221,12 +246,12 @@ function AnnotatedHtmlView({
         const mark   = document.createElement("mark");
         mark.dataset.vid = v.id;
         mark.textContent = text.slice(localStart, localEnd);
-        const after = document.createTextNode(text.slice(localEnd));
+        const after  = document.createTextNode(text.slice(localEnd));
         const parent = textNode.parentNode;
         if (!parent) continue;
         parent.insertBefore(before, textNode);
-        parent.insertBefore(mark, textNode);
-        parent.insertBefore(after, textNode);
+        parent.insertBefore(mark,   textNode);
+        parent.insertBefore(after,  textNode);
         parent.removeChild(textNode);
         overlapping[0].node  = after as unknown as Text;
         overlapping[0].start = nodeStart + localEnd;
@@ -281,11 +306,12 @@ export default function Workbench() {
   const [sevFilter, setSevFilter, clearSevFilter]     = useLocalStorage(`${LS}sevFilter`, "all", 0);
   const [savedViolations, setSavedViolations,
          clearSavedViolations]                        = useLocalStorage<PolicyViolation[]>(`${LS}violations`, [], 800);
+
   // ── Transient state ──────────────────────────────────────────────────────────
-  const [editMode, setEditMode] = useState(false);
-  const [panel, setPanel]       = useState<Panel>("violations");
-  const [selected, setSelected] = useState<{ start: number; end: number } | null>(null);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [editMode, setEditMode]     = useState(false);
+  const [panel, setPanel]           = useState<Panel>("violations");
+  const [selected, setSelected]     = useState<{ start: number; end: number } | null>(null);
+  const [hoveredId, setHoveredId]   = useState<string | null>(null);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
 
   const [policies, setPolicies]             = useState<(Pick<PolicyDocument, "id" | "name" | "uploadedAt"> & { ruleCount: number; aiParsed: boolean })[]>([]);
@@ -304,17 +330,13 @@ export default function Workbench() {
 
   // On mount: restore violations from localStorage into the checker
   useEffect(() => {
-    if (savedViolations.length > 0) {
-      setViolations(savedViolations);
-    }
+    if (savedViolations.length > 0) setViolations(savedViolations);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Keep savedViolations in sync whenever live violations change
   useEffect(() => {
-    if (liveViolations.length > 0) {
-      setSavedViolations(liveViolations);
-    }
+    if (liveViolations.length > 0) setSavedViolations(liveViolations);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveViolations]);
 
@@ -359,10 +381,7 @@ export default function Workbench() {
     } catch (_) {}
   }
 
-  // Fetch policies + restore saved rules on mount
-  useEffect(() => {
-    fetchPolicies();
-  }, []);
+  useEffect(() => { fetchPolicies(); }, []);
 
   // When activePolicyId is restored from LS, also fetch its rules
   const prevPolicyId = useRef<string | null>(null);
@@ -872,10 +891,10 @@ export default function Workbench() {
                   <h2 className="text-sm font-semibold">Статистика проверки</h2>
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { label: "Всего",         value: stats.total },
-                      { label: "Ошибок",        value: stats.errors,   color: "text-destructive" },
+                      { label: "Всего",          value: stats.total },
+                      { label: "Ошибок",         value: stats.errors,   color: "text-destructive" },
                       { label: "Предупреждений", value: stats.warnings, color: "text-amber-500" },
-                      { label: "Инфо",           value: stats.info,     color: "text-blue-500" },
+                      { label: "Инфо",            value: stats.info,     color: "text-blue-500" },
                     ].map(({ label, value, color }) => (
                       <div key={label} className="rounded-md border p-3 overflow-hidden">
                         <div className={`text-xl font-bold ${color ?? ""}`}>{value}</div>
