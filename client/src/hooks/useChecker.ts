@@ -5,11 +5,7 @@
  * Flow:
  *   1. heuristicCheck() → immediate violations
  *   2. POST /api/check  → AI violations (positions already verified server-side)
- *   3. merge: AI overrides heuristic for same span; client-side guard added
- *
- * FIX: mergeViolations теперь также отфильтровывает нарушения
- *      с невалидными позициями (start < 0, end > textLength, start >= end)
- *      перед рендером, чтобы сегментатор в Workbench не падал.
+ *   3. merge: AI overrides heuristic for same span; dedup by (start,end,matchedText)
  */
 
 import { useState, useCallback } from "react";
@@ -72,7 +68,6 @@ export function useChecker() {
   return { ...state, check, reset };
 }
 
-/** Гарантирует, что позиции нарушения находятся в пределах текста. */
 function isValidViolation(v: PolicyViolation, textLen: number): boolean {
   return (
     typeof v.start === "number" &&
@@ -88,15 +83,36 @@ function mergeViolations(
   ai: PolicyViolation[],
   textLen: number,
 ): PolicyViolation[] {
-  // Отфильтровываем невалидные позиции с обеих сторон
   const validH = heuristic.filter((v) => isValidViolation(v, textLen));
   const validA = ai.filter((v) => isValidViolation(v, textLen));
 
-  // AI-нарушения вытесняют эвристику при перекрытии спанов
+  // AI вытесняет эвристику при перекрытии спанов
   const aiSpans = validA.map((v) => [v.start, v.end] as [number, number]);
   const filteredH = validH.filter(
     (h) => !aiSpans.some(([s, e]) => h.start < e && h.end > s)
   );
 
-  return [...filteredH, ...validA].sort((a, b) => a.start - b.start);
+  const combined = [...filteredH, ...validA].sort((a, b) => a.start - b.start);
+
+  // ── Дедупликация: убираем дубли с одинаковым (start, end) или
+  //    с одинаковым matchedText.toLowerCase() + перекрывающимся спаном ──────
+  const seen = new Map<string, true>();
+  const deduped: PolicyViolation[] = [];
+
+  for (const v of combined) {
+    // Ключ 1: точное совпадение позиций
+    const posKey = `${v.start}:${v.end}`;
+    if (seen.has(posKey)) continue;
+
+    // Ключ 2: одинаковый нормализованный текст + та же категория
+    // (ловит случай когда AI вернул несколько раз одно слово с разными id)
+    const textKey = `${v.category}:${v.matchedText.trim().toLowerCase()}`;
+    if (seen.has(textKey)) continue;
+
+    seen.set(posKey, true);
+    seen.set(textKey, true);
+    deduped.push(v);
+  }
+
+  return deduped;
 }

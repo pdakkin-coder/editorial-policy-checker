@@ -53,33 +53,54 @@
   body { @apply bg-background text-foreground; font-family: 'Inter', system-ui, sans-serif; }
 }
 
-/* ── Violation annotations ── */
-.ann-error    { background-color: hsl(0 80% 92%);   border-bottom: 2px solid hsl(0 72% 51%);   border-radius: 2px; cursor: pointer; }
-.ann-warning  { background-color: hsl(40 90% 90%);  border-bottom: 2px solid hsl(38 90% 50%);  border-radius: 2px; cursor: pointer; }
-.ann-info     { background-color: hsl(210 80% 92%); border-bottom: 2px solid hsl(210 70% 55%); border-radius: 2px; cursor: pointer; }
+/* ══════════════════════════════════════════════════════════════════
+   Violation annotations — LIGHT MODE
+   Фон: очень светлый, тонированный. Текст наследуется (тёмный).
+   ══════════════════════════════════════════════════════════════════ */
+.ann-stop-word    { background-color: hsl(0   80% 92%);  border-bottom: 2px solid hsl(0   72% 51%); border-radius: 2px; cursor: pointer; }
+.ann-style        { background-color: hsl(280 55% 92%);  border-bottom: 2px solid hsl(280 50% 55%); border-radius: 2px; cursor: pointer; }
+.ann-abbreviation { background-color: hsl(200 70% 90%);  border-bottom: 2px solid hsl(200 65% 50%); border-radius: 2px; cursor: pointer; }
+.ann-tone         { background-color: hsl(40  90% 88%);  border-bottom: 2px solid hsl(38  90% 50%); border-radius: 2px; cursor: pointer; }
+.ann-structure    { background-color: hsl(150 55% 89%);  border-bottom: 2px solid hsl(150 50% 45%); border-radius: 2px; cursor: pointer; }
+.ann-typography   { background-color: hsl(55  80% 87%);  border-bottom: 2px solid hsl(55  75% 42%); border-radius: 2px; cursor: pointer; }
+.ann-factual      { background-color: hsl(15  80% 90%);  border-bottom: 2px solid hsl(15  70% 50%); border-radius: 2px; cursor: pointer; }
+.ann-custom       { background-color: hsl(240 50% 91%);  border-bottom: 2px solid hsl(240 45% 55%); border-radius: 2px; cursor: pointer; }
 
-.ann-stop-word    { background-color: hsl(0 80% 92%);   border-bottom: 2px solid hsl(0 72% 51%);   }
-.ann-style        { background-color: hsl(280 60% 92%); border-bottom: 2px solid hsl(280 55% 55%); }
-.ann-abbreviation { background-color: hsl(200 70% 90%); border-bottom: 2px solid hsl(200 65% 50%); }
-.ann-tone         { background-color: hsl(40 90% 90%);  border-bottom: 2px solid hsl(38 90% 50%);  }
-.ann-structure    { background-color: hsl(150 55% 90%); border-bottom: 2px solid hsl(150 50% 45%); }
-.ann-typography   { background-color: hsl(60 80% 88%);  border-bottom: 2px solid hsl(55 75% 45%);  }
-.ann-factual      { background-color: hsl(15 80% 90%);  border-bottom: 2px solid hsl(15 70% 50%);  }
-.ann-custom       { background-color: hsl(240 50% 92%); border-bottom: 2px solid hsl(240 45% 55%); }
-
+/* Focus / selected states — light */
 .ann-focused  { outline: 2px solid hsl(var(--primary)); outline-offset: 1px; }
-.ann-selected { outline: 2px solid hsl(var(--primary)); outline-offset: 1px; background-color: hsl(var(--primary) / 0.15); }
+.ann-selected { outline: 2px solid hsl(var(--primary)); outline-offset: 1px;
+                background-color: hsl(var(--primary) / 0.15); }
+
+/* ══════════════════════════════════════════════════════════════════
+   Violation annotations — DARK MODE
+   Фон: тёмный, насыщенный. Граница: яркая. Цвет текста явно задан
+   как светлый, чтобы аннотация не перекрывала текст документа.
+   ══════════════════════════════════════════════════════════════════ */
+.dark .ann-stop-word    { background-color: hsl(0   70% 22%); border-bottom-color: hsl(0   72% 60%); color: hsl(0 0% 88%); }
+.dark .ann-style        { background-color: hsl(280 45% 22%); border-bottom-color: hsl(280 55% 70%); color: hsl(0 0% 88%); }
+.dark .ann-abbreviation { background-color: hsl(200 60% 20%); border-bottom-color: hsl(200 65% 65%); color: hsl(0 0% 88%); }
+.dark .ann-tone         { background-color: hsl(38  70% 22%); border-bottom-color: hsl(38  90% 60%); color: hsl(0 0% 88%); }
+.dark .ann-structure    { background-color: hsl(150 45% 18%); border-bottom-color: hsl(150 55% 55%); color: hsl(0 0% 88%); }
+.dark .ann-typography   { background-color: hsl(55  60% 18%); border-bottom-color: hsl(55  75% 55%); color: hsl(0 0% 88%); }
+.dark .ann-factual      { background-color: hsl(15  65% 20%); border-bottom-color: hsl(15  70% 60%); color: hsl(0 0% 88%); }
+.dark .ann-custom       { background-color: hsl(240 40% 22%); border-bottom-color: hsl(240 50% 70%); color: hsl(0 0% 88%); }
+
+/* Focus / selected states — dark */
+.dark .ann-focused  { outline-color: hsl(var(--primary)); }
+.dark .ann-selected { outline-color: hsl(var(--primary));
+                      background-color: hsl(var(--primary) / 0.25);
+                      color: hsl(0 0% 92%); }
 
 /* ── Legend dots ── */
-.legend-dot { display:inline-block; width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-.legend-dot-error        { background: hsl(0 72% 51%);   }
-.legend-dot-warning      { background: hsl(38 90% 50%);  }
+.legend-dot              { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.legend-dot-error        { background: hsl(0   72% 51%); }
+.legend-dot-warning      { background: hsl(38  90% 50%); }
 .legend-dot-info         { background: hsl(210 70% 55%); }
-.legend-dot-stop-word    { background: hsl(0 72% 51%);   }
+.legend-dot-stop-word    { background: hsl(0   72% 51%); }
 .legend-dot-style        { background: hsl(280 55% 55%); }
 .legend-dot-abbreviation { background: hsl(200 65% 50%); }
-.legend-dot-tone         { background: hsl(38 90% 50%);  }
+.legend-dot-tone         { background: hsl(38  90% 50%); }
 .legend-dot-structure    { background: hsl(150 50% 45%); }
-.legend-dot-typography   { background: hsl(55 75% 45%);  }
-.legend-dot-factual      { background: hsl(15 70% 50%);  }
+.legend-dot-typography   { background: hsl(55  75% 45%); }
+.legend-dot-factual      { background: hsl(15  70% 50%); }
 .legend-dot-custom       { background: hsl(240 45% 55%); }
