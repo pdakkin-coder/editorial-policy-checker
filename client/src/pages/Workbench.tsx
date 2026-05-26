@@ -1,8 +1,8 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   FileText, Upload, Download, Link2, Sun, Moon, Sparkles, BookOpen,
-  AlertTriangle, CheckCircle2, Info, ChevronRight, Cpu, Trash2,
-  PenSquare, RotateCcw, Save, RefreshCw, FileDown,
+  AlertTriangle, CheckCircle2, Info, ChevronRight, Cpu, FileDown,
+  PenSquare, RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,9 +16,6 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { EPCLogo } from "@/components/Logo";
 import { useTheme } from "@/components/ThemeProvider";
@@ -31,14 +28,14 @@ import type { PolicyViolation, PolicyDocument } from "@shared/types";
 type Panel = "violations" | "rules" | "stats";
 
 const CATEGORY_LABELS: Record<string, string> = {
-  "stop-word":    "Стоп-слово",
-  style:          "Стиль",
-  abbreviation:   "Сокращение",
-  tone:           "Тональность",
-  structure:      "Структура",
-  typography:     "Типографика",
-  factual:        "Факт",
-  custom:         "Правило политики",
+  "stop-word":  "Стоп-слово",
+  style:        "Стиль",
+  abbreviation: "Сокращение",
+  tone:         "Тональность",
+  structure:    "Структура",
+  typography:   "Типографика",
+  factual:      "Факт",
+  custom:       "Правило политики",
 };
 
 const SEVERITY_ICON = {
@@ -47,12 +44,50 @@ const SEVERITY_ICON = {
   info:    <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />,
 };
 
-function annClass(v: PolicyViolation): string {
-  return `ann-${v.category}`;
-}
-
+function annClass(v: PolicyViolation): string { return `ann-${v.category}`; }
 function legendDotClass(v: PolicyViolation): string {
   return `legend-dot legend-dot-${v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info"}`;
+}
+
+// ── Inline export menu (no dropdown-menu dep) ──────────────────────────────
+function ExportMenu({ onExport, disabled }: { onExport: (f: "docx" | "html" | "txt") => void; disabled: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const close = useCallback(() => setOpen(false), []);
+
+  // Close on outside click
+  useMemo(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const items: { label: string; fmt: "docx" | "html" | "txt" }[] = [
+    { label: ".docx (Word)", fmt: "docx" },
+    { label: ".html",        fmt: "html" },
+    { label: ".txt",         fmt: "txt"  },
+  ];
+
+  return (
+    <div ref={ref} className="relative">
+      <Button variant="outline" size="sm" disabled={disabled} onClick={() => setOpen((v) => !v)}>
+        <FileDown className="h-4 w-4 mr-1.5" />Экспорт
+      </Button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded-md border bg-popover shadow-md py-1">
+          {items.map(({ label, fmt }) => (
+            <button key={fmt} type="button"
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors"
+              onMouseDown={() => { onExport(fmt); close(); }}
+            >{label}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── drag-resize ──────────────────────────────────────────────────────────────
@@ -87,14 +122,12 @@ export default function Workbench() {
   const filePolicyInput      = useRef<HTMLInputElement | null>(null);
   const editorRef            = useRef<RichEditorHandle>(null);
 
-  const [docName, setDocName]     = useState("Документ не загружен");
-  // docHtml — source of truth for editor
-  const [docHtml, setDocHtml]     = useState("");
-  // docText — plain text for checker
-  const [docText, setDocText]     = useState("");
-  const [editMode, setEditMode]   = useState(false);
-  const [panel, setPanel]         = useState<Panel>("violations");
-  const [selected, setSelected]   = useState<{ start: number; end: number } | null>(null);
+  const [docName, setDocName]   = useState("Документ не загружен");
+  const [docHtml, setDocHtml]   = useState("");
+  const [docText, setDocText]   = useState("");
+  const [editMode, setEditMode] = useState(false);
+  const [panel, setPanel]       = useState<Panel>("violations");
+  const [selected, setSelected] = useState<{ start: number; end: number } | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   const [policies, setPolicies]             = useState<(Pick<PolicyDocument, "id" | "name" | "uploadedAt"> & { ruleCount: number; aiParsed: boolean })[]>([]);
@@ -113,11 +146,11 @@ export default function Workbench() {
 
   const { violations, loading: checkLoading, error: checkError, result: checkResult, activeModel, check, reset } = useChecker();
 
-  // ── Annotation spans: only used in view mode ──────────────────────────────
   const spanRefs = useRef<Map<string, HTMLSpanElement>>(new Map());
 
   const segments = useMemo(() => {
-    if (!docText || violations.length === 0) return [{ kind: "plain" as const, text: docText, start: 0, end: docText.length }];
+    if (!docText || violations.length === 0)
+      return [{ kind: "plain" as const, text: docText, start: 0, end: docText.length }];
     type Seg = { kind: "plain" | "ann"; text: string; start: number; end: number; violation?: PolicyViolation };
     const segs: Seg[] = [];
     let cursor = 0;
@@ -147,7 +180,6 @@ export default function Workbench() {
     info:     violations.filter(v => v.severity === "info").length,
   }), [violations]);
 
-  // ── API helpers ───────────────────────────────────────────────────────────
   async function fetchPolicies() {
     try {
       const res  = await apiRequest("GET", "/api/policies");
@@ -239,7 +271,6 @@ export default function Workbench() {
 
   async function handleCheck() {
     if (!docText.trim() || !activePolicyId) return;
-    // If in edit mode, grab the latest content first
     if (editMode && editorRef.current) {
       const latestHtml = editorRef.current.getHtml();
       const latestText = editorRef.current.getText();
@@ -253,7 +284,13 @@ export default function Workbench() {
     setPanel("violations");
   }
 
-  // ── Export ────────────────────────────────────────────────────────────────
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   async function handleExport(format: "docx" | "html" | "txt") {
     const html = editMode && editorRef.current ? editorRef.current.getHtml() : docHtml;
     const text = editMode && editorRef.current ? editorRef.current.getText() : docText;
@@ -264,28 +301,25 @@ export default function Workbench() {
     setExportLoading(true);
     try {
       if (format === "txt") {
-        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-        downloadBlob(blob, `${docName}.txt`);
+        downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), `${docName}.txt`);
       } else if (format === "html") {
-        const fullHtml = `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>${docName}</title></head><body>${html}</body></html>`;
-        const blob = new Blob([fullHtml], { type: "text/html;charset=utf-8" });
-        downloadBlob(blob, `${docName}.html`);
+        const full = `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>${docName}</title></head><body>${html}</body></html>`;
+        downloadBlob(new Blob([full], { type: "text/html;charset=utf-8" }), `${docName}.html`);
       } else {
-        // DOCX via server
         const res = await fetch("/api/export-docx", {
-          method:  "POST",
+          method: "POST",
           headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify({ html, name: docName }),
+          body: JSON.stringify({ html, name: docName }),
         });
         if (!res.ok) {
-          const data = await res.json().catch(() => ({})) as { message?: string };
-          throw new Error(data.message ?? `HTTP ${res.status}`);
+          const d = await res.json().catch(() => ({})) as { message?: string };
+          throw new Error(d.message ?? `HTTP ${res.status}`);
         }
         const blob = await res.blob();
         const ext  = res.headers.get("content-disposition")?.match(/filename="[^"]+\.([^"]+)"/)?.[1] ?? "docx";
         downloadBlob(blob, `${docName}.${ext}`);
       }
-      toast({ title: "Экспорт завершён", description: `Файл ${docName} сохранён.` });
+      toast({ title: "Экспорт завершён", description: `${docName} сохранён.` });
     } catch (err) {
       toast({ title: "Ошибка экспорта", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
     } finally {
@@ -293,22 +327,12 @@ export default function Workbench() {
     }
   }
 
-  function downloadBlob(blob: Blob, filename: string) {
-    const url = URL.createObjectURL(blob);
-    const a   = document.createElement("a");
-    a.href = url; a.download = filename; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  // ── Scroll-to annotation ──────────────────────────────────────────────────
   function scrollToViolation(v: PolicyViolation) {
-    // In view mode, scroll to highlighted span
     const el = spanRefs.current.get(v.id);
     if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.focus({ preventScroll: true }); }
     setSelected({ start: v.start, end: v.end });
   }
 
-  // ── Sync editor → state on change ────────────────────────────────────────
   function handleEditorChange(html: string, text: string) {
     setDocHtml(html);
     setDocText(text);
@@ -317,7 +341,7 @@ export default function Workbench() {
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      {/* Header */}
       <header className="h-14 border-b flex items-center px-4 gap-3 shrink-0 bg-background/80 backdrop-blur">
         <span className="text-primary"><EPCLogo size={30} /></span>
         <div className="leading-none select-none shrink-0">
@@ -334,7 +358,6 @@ export default function Workbench() {
           <input ref={fileDocInput}    type="file" accept=".docx,.pdf,.txt,.md" onChange={handleDocFile}    className="hidden" />
           <input ref={filePolicyInput} type="file" accept=".docx,.pdf,.txt,.md" onChange={handlePolicyFile} className="hidden" />
 
-          {/* Import */}
           <Button variant="outline" size="sm" onClick={() => fileDocInput.current?.click()}>
             <Upload className="h-4 w-4 mr-1.5" />Документ
           </Button>
@@ -342,7 +365,6 @@ export default function Workbench() {
             <Link2 className="h-4 w-4 mr-1.5" />Ссылка
           </Button>
 
-          {/* Edit toggle */}
           {docHtml && (
             editMode ? (
               <Button variant="outline" size="sm" onClick={() => setEditMode(false)}>
@@ -355,23 +377,10 @@ export default function Workbench() {
             )
           )}
 
-          {/* Export dropdown */}
           {(docHtml || docText) && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" disabled={exportLoading}>
-                  <FileDown className="h-4 w-4 mr-1.5" />Экспорт
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => handleExport("docx")}>.docx (Word)</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleExport("html")}>.html</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleExport("txt")}>.txt</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <ExportMenu onExport={handleExport} disabled={exportLoading} />
           )}
 
-          {/* Check */}
           <Button
             variant="default" size="sm"
             onClick={handleCheck}
@@ -386,7 +395,7 @@ export default function Workbench() {
         </div>
       </header>
 
-      {/* ── AI status bar ────────────────────────────────────────────────────── */}
+      {/* AI status bar */}
       {(checkLoading || checkResult || checkError) && (
         <div className="h-7 border-b px-4 flex items-center gap-2 text-[11px] bg-muted/40 shrink-0">
           <Sparkles className="h-3.5 w-3.5 text-primary shrink-0" />
@@ -407,14 +416,15 @@ export default function Workbench() {
         </div>
       )}
 
-      {/* ── URL dialog ────────────────────────────────────────────────────────── */}
+      {/* URL import dialog */}
       <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Импорт по ссылке</DialogTitle>
             <DialogDescription>Публичная ссылка на .docx, .pdf, .txt, .md или Google Docs.</DialogDescription>
           </DialogHeader>
-          <Input placeholder="https://…" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleUrlImport()} />
+          <Input placeholder="https://…" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleUrlImport()} />
           <DialogFooter>
             <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>Отмена</Button>
             <Button onClick={handleUrlImport} disabled={linkLoading || !linkUrl.trim()}>{linkLoading ? "Загрузка…" : "Импортировать"}</Button>
@@ -422,7 +432,7 @@ export default function Workbench() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Main layout ──────────────────────────────────────────────────────── */}
+      {/* Main layout */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* Left sidebar */}
@@ -477,10 +487,9 @@ export default function Workbench() {
           <div className="absolute top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/30 transition-colors" style={{ left: sidebar.width - 1 }} onMouseDown={sidebar.onMouseDown} />
         </aside>
 
-        {/* ── Document area ───────────────────────────────────────────────── */}
+        {/* Document area */}
         <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
           {editMode ? (
-            /* Rich editor mode */
             <RichEditor
               ref={editorRef}
               initialHtml={docHtml}
@@ -488,7 +497,6 @@ export default function Workbench() {
               className="flex-1 min-h-0"
             />
           ) : (
-            /* View / annotation mode */
             <ScrollArea className="flex-1 min-h-0">
               {docText ? (
                 <div className="p-6 min-h-full font-mono text-sm leading-relaxed whitespace-pre-wrap select-text break-words">
@@ -521,7 +529,7 @@ export default function Workbench() {
           )}
         </main>
 
-        {/* ── Right inspector panel ────────────────────────────────────────── */}
+        {/* Right inspector */}
         <div className="flex flex-col border-l bg-background shrink-0 overflow-hidden relative" style={{ width: rightPanel.width }}>
           <div className="absolute top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/30 transition-colors z-10" style={{ left: 0 }} onMouseDown={rightPanel.onMouseDown} />
           <ScrollArea className="flex-1 min-h-0">
@@ -634,10 +642,10 @@ export default function Workbench() {
                   <h2 className="text-sm font-semibold">Статистика проверки</h2>
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { label: "Всего нарушений", value: stats.total },
-                      { label: "Ошибок",          value: stats.errors,   color: "text-destructive" },
-                      { label: "Предупреждений",  value: stats.warnings, color: "text-amber-500" },
-                      { label: "Инфо",            value: stats.info,     color: "text-blue-500" },
+                      { label: "Всего",         value: stats.total },
+                      { label: "Ошибок",        value: stats.errors,   color: "text-destructive" },
+                      { label: "Предупреждений", value: stats.warnings, color: "text-amber-500" },
+                      { label: "Инфо",           value: stats.info,     color: "text-blue-500" },
                     ].map(({ label, value, color }) => (
                       <div key={label} className="rounded-md border p-3 overflow-hidden">
                         <div className={`text-xl font-bold ${color ?? ""}`}>{value}</div>
@@ -652,6 +660,7 @@ export default function Workbench() {
                   )}
                 </div>
               )}
+
             </div>
           </ScrollArea>
         </div>
