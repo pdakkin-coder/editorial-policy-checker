@@ -4,12 +4,12 @@
  * Возвращает массив PolicyViolation с офсетами, предложениями и объяснениями.
  */
 
-import { geminiGenerate } from "./geminiRouter.js";
+import { callGemini } from "./geminiRouter.js";
 import type {
   PolicyRule, PolicyViolation, CheckDocumentRequest, CheckDocumentResponse,
 } from "../shared/types.js";
 
-const SYSTEM = `Ты — редактор. Проверь текст документа по списку правил редакционной политики.
+const SYSTEM_INSTRUCTION = `Ты — редактор. Проверь текст документа по списку правил редакционной политики.
 Верни строго JSON без markdown-блоков:
 {
   "violations": [
@@ -36,17 +36,28 @@ export async function checkDocument(
   req: CheckDocumentRequest,
   rules: PolicyRule[],
 ): Promise<CheckDocumentResponse> {
+  const apiKey = process.env.GEMINI_API_KEY!;
+
   const rulesText = rules
     .map((r, i) => `${i + 1}. [${r.id}] (${r.category}, ${r.severity}) ${r.name}: ${r.description}`)
     .join("\n");
 
-  const prompt =
+  const userText =
+    `${SYSTEM_INSTRUCTION}\n\n` +
     `Правила редакционной политики:\n${rulesText}\n\n` +
     `Проверяемый текст (язык: ${req.language ?? "auto"}):\n${req.documentText.slice(0, 15000)}`;
 
+  const contents = [
+    { role: "user", parts: [{ text: userText }] },
+  ];
+  const generationConfig = {
+    temperature:     0.1,
+    responseMimeType: "application/json",
+  };
+
   try {
-    const result = await geminiGenerate(prompt, SYSTEM);
-    const parsed = JSON.parse(stripFences(result.text)) as {
+    const result = await callGemini(contents, generationConfig, apiKey);
+    const parsed = JSON.parse(result.raw) as {
       violations: PolicyViolation[];
       summary?: string;
       detectedLanguage?: "ru" | "en" | "mixed";
@@ -67,8 +78,4 @@ export async function checkDocument(
       error:      err instanceof Error ? err.message : String(err),
     } as CheckDocumentResponse;
   }
-}
-
-function stripFences(s: string): string {
-  return s.replace(/^```[\w]*\n?/m, "").replace(/\n?```$/m, "").trim();
 }

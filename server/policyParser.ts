@@ -4,10 +4,10 @@
  * структурированный массив PolicyRule через Gemini.
  */
 
-import { geminiGenerate } from "./geminiRouter.js";
+import { callGemini } from "./geminiRouter.js";
 import type { ParsePolicyRequest, ParsePolicyResponse, PolicyRule } from "../shared/types.js";
 
-const SYSTEM = `Ты — редактор и лингвист. Твоя задача — разобрать документ редакционной политики
+const SYSTEM_INSTRUCTION = `Ты — редактор и лингвист. Твоя задача — разобрать документ редакционной политики
 и вернуть строго JSON без markdown-блоков. Формат:
 {
   "rules": [
@@ -30,11 +30,20 @@ custom — прочие правила.`;
 export async function parsePolicy(
   req: ParsePolicyRequest,
 ): Promise<ParsePolicyResponse> {
-  const prompt = `Документ редакционной политики «${req.name}»:\n\n${req.rawText.slice(0, 12000)}`;
+  const apiKey = process.env.GEMINI_API_KEY!;
+  const userText = `Документ редакционной политики «${req.name}»:\n\n${req.rawText.slice(0, 12000)}`;
+
+  const contents = [
+    { role: "user", parts: [{ text: userText }] },
+  ];
+  const generationConfig = {
+    temperature:     0.2,
+    responseMimeType: "application/json",
+  };
 
   try {
-    const result = await geminiGenerate(prompt, SYSTEM);
-    const parsed = JSON.parse(stripFences(result.text)) as { rules: PolicyRule[]; summary?: string };
+    const result = await callGemini(contents, generationConfig, apiKey);
+    const parsed = JSON.parse(result.raw) as { rules: PolicyRule[]; summary?: string };
     return {
       rules:   parsed.rules ?? [],
       summary: parsed.summary,
@@ -46,8 +55,4 @@ export async function parsePolicy(
       error: err instanceof Error ? err.message : String(err),
     };
   }
-}
-
-function stripFences(s: string): string {
-  return s.replace(/^```[\w]*\n?/m, "").replace(/\n?```$/m, "").trim();
 }
