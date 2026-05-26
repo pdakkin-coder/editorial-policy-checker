@@ -26,13 +26,23 @@ try {
       res.sendFile(path.join(distPublic, "index.html"))
     );
   } else {
-    const { createServer } = await import("vite");
-    const vite = await createServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.ssrFixStacktrace);
-    app.use(vite.middlewares);
+    try {
+      const { createServer } = await import("vite");
+      // Указываем путь к vite.config.ts явно, чтобы root:"client" применился
+      const root = path.resolve(__dirname, "..");
+      const vite = await createServer({
+        configFile: path.join(root, "vite.config.ts"),
+        root,
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.ssrFixStacktrace);
+      app.use(vite.middlewares);
+      console.log("[epc] Vite dev middleware активен");
+    } catch (err) {
+      console.error("[epc] Ошибка запуска Vite:", err);
+      process.exit(1);
+    }
   }
 
   const PORT = Number(process.env.PORT ?? 5000);
