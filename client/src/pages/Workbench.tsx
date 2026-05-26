@@ -1,8 +1,21 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+/**
+ * Workbench.tsx
+ * Главная страница редактора.
+ *
+ * Новые возможности:
+ * - Rich contenteditable редактор с тулбаром форматирования
+ * - Структурированный импорт DOCX (заголовки, списки, жирный, курсив)
+ * - Экспорт в DOCX и TXT
+ * - Аннотации накладываются на plain text; переключение режимов просмотра
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText, Upload, Download, Link2, Sun, Moon, Sparkles, BookOpen,
   AlertTriangle, CheckCircle2, Info, ChevronRight, Cpu, Trash2,
   PenSquare, RotateCcw, Save, Bold, Italic, List, RefreshCw,
+  Heading1, Heading2, Heading3, AlignLeft, Underline, Code, FileDown,
+  ListOrdered, Quote, Strikethrough, Undo2, Redo2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,10 +29,12 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { EPCLogo } from "@/components/Logo";
 import { useTheme } from "@/components/ThemeProvider";
-import { importFile } from "@/lib/importDoc";
 import { apiRequest } from "@/lib/queryClient";
 import { useChecker } from "@/hooks/useChecker";
 import type { PolicyViolation, PolicyDocument } from "@shared/types";
@@ -43,16 +58,26 @@ const SEVERITY_ICON = {
   info:    <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />,
 };
 
-function annClass(v: PolicyViolation): string {
-  return `ann-${v.category}`;
-}
-
+function annClass(v: PolicyViolation): string { return `ann-${v.category}`; }
 function legendDotClass(v: PolicyViolation): string {
-  return `legend-dot legend-dot-${v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info"}`;
+  const s = v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info";
+  return `legend-dot legend-dot-${s}`;
 }
 
-// ── drag-resize ──────────────────────────────────────────────────────────────────
+// ── HTML → plain text ─────────────────────────────────────────────────────────
+function htmlToPlain(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/h[1-6]>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n").trim();
+}
 
+// ── drag-resize ───────────────────────────────────────────────────────────────
 function useDragResize(initial: number, min: number, max: number, dir: "left" | "right" = "right") {
   const [width, setWidth] = useState(initial);
   const drag = useRef(false);
@@ -77,43 +102,107 @@ function useDragResize(initial: number, min: number, max: number, dir: "left" | 
   return { width, onMouseDown };
 }
 
+// ── Toolbar button ────────────────────────────────────────────────────────────
+function TB({ title, onClick, active, children }: {
+  title: string; onClick: () => void; active?: boolean; children: React.ReactNode;
+}) {
+  return (
+    <button type="button" title={title} onClick={onClick}
+      className={`h-7 w-7 flex items-center justify-center rounded text-xs transition-colors ${
+        active ? "bg-primary text-primary-foreground" : "hover:bg-muted text-muted-foreground hover:text-foreground"
+      }`}
+    >{children}</button>
+  );
+}
+
+// ── Rich Editor Toolbar ───────────────────────────────────────────────────────
+function EditorToolbar({ onCommand }: { onCommand: (cmd: string, val?: string) => void }) {
+  return (
+    <div className="h-10 border-b flex items-center gap-0.5 px-3 bg-muted/20 shrink-0 flex-wrap overflow-hidden">
+      <TB title="Отменить (Ctrl+Z)" onClick={() => onCommand("undo")}><Undo2 className="h-3.5 w-3.5" /></TB>
+      <TB title="Повторить (Ctrl+Y)" onClick={() => onCommand("redo")}><Redo2 className="h-3.5 w-3.5" /></TB>
+      <div className="w-px h-5 bg-border mx-1 shrink-0" />
+      <TB title="Заголовок 1" onClick={() => onCommand("formatBlock", "h1")}><Heading1 className="h-3.5 w-3.5" /></TB>
+      <TB title="Заголовок 2" onClick={() => onCommand("formatBlock", "h2")}><Heading2 className="h-3.5 w-3.5" /></TB>
+      <TB title="Заголовок 3" onClick={() => onCommand("formatBlock", "h3")}><Heading3 className="h-3.5 w-3.5" /></TB>
+      <TB title="Обычный текст" onClick={() => onCommand("formatBlock", "p")}><AlignLeft className="h-3.5 w-3.5" /></TB>
+      <div className="w-px h-5 bg-border mx-1 shrink-0" />
+      <TB title="Жирный (Ctrl+B)" onClick={() => onCommand("bold")}><Bold className="h-3.5 w-3.5" /></TB>
+      <TB title="Курсив (Ctrl+I)" onClick={() => onCommand("italic")}><Italic className="h-3.5 w-3.5" /></TB>
+      <TB title="Подчёркнутый (Ctrl+U)" onClick={() => onCommand("underline")}><Underline className="h-3.5 w-3.5" /></TB>
+      <TB title="Зачёркнутый" onClick={() => onCommand("strikethrough")}><Strikethrough className="h-3.5 w-3.5" /></TB>
+      <div className="w-px h-5 bg-border mx-1 shrink-0" />
+      <TB title="Маркированный список" onClick={() => onCommand("insertUnorderedList")}><List className="h-3.5 w-3.5" /></TB>
+      <TB title="Нумерованный список" onClick={() => onCommand("insertOrderedList")}><ListOrdered className="h-3.5 w-3.5" /></TB>
+      <TB title="Цитата" onClick={() => onCommand("formatBlock", "blockquote")}><Quote className="h-3.5 w-3.5" /></TB>
+    </div>
+  );
+}
+
 export default function Workbench() {
   const { theme, toggle }    = useTheme();
   const { toast }            = useToast();
   const fileDocInput         = useRef<HTMLInputElement | null>(null);
   const filePolicyInput      = useRef<HTMLInputElement | null>(null);
+  const editorRef            = useRef<HTMLDivElement | null>(null);
 
+  // docHtml — источник истины для редактора; docText — plain text для чекера
   const [docName, setDocName]   = useState("Документ не загружен");
-  const [docText, setDocText]   = useState("");
-  const [draft, setDraft]       = useState("");
+  const [docHtml, setDocHtml]   = useState("");   // rich HTML
+  const [docText, setDocText]   = useState("");   // plain text для checker
   const [editMode, setEditMode] = useState(false);
   const [panel, setPanel]       = useState<Panel>("violations");
   const [selected, setSelected] = useState<{ start: number; end: number } | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
-  const [policies, setPolicies]     = useState<(Pick<PolicyDocument, "id" | "name" | "uploadedAt"> & { ruleCount: number; aiParsed: boolean })[]>([]);
+  const [policies, setPolicies]         = useState<(Pick<PolicyDocument, "id" | "name" | "uploadedAt"> & { ruleCount: number; aiParsed: boolean })[]>([]);
   const [activePolicyId, setActivePolicyId] = useState<string | null>(null);
-  const [policyRules, setPolicyRules] = useState<PolicyDocument["rules"]>([]);
+  const [policyRules, setPolicyRules]   = useState<PolicyDocument["rules"]>([]);
   const [policyLoading, setPolicyLoading] = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
-  const [linkUrl, setLinkUrl] = useState("");
-  const [linkLoading, setLinkLoading] = useState(false);
-  const [catFilter, setCatFilter] = useState("all");
-  const [sevFilter, setSevFilter] = useState("all");
+  const [linkUrl, setLinkUrl]           = useState("");
+  const [linkLoading, setLinkLoading]   = useState(false);
+  const [catFilter, setCatFilter]       = useState("all");
+  const [sevFilter, setSevFilter]       = useState("all");
 
   const sidebar    = useDragResize(220, 160, 320, "right");
   const rightPanel = useDragResize(340, 280, 520, "left");
 
   const { violations, loading: checkLoading, error: checkError, result: checkResult, activeModel, check, reset } = useChecker();
-
   const spanRefs = useRef<Map<string, HTMLSpanElement>>(new Map());
 
+  // Sync editor content → docHtml/docText when in edit mode
+  function syncFromEditor() {
+    if (editorRef.current) {
+      const html = editorRef.current.innerHTML;
+      setDocHtml(html);
+      setDocText(htmlToPlain(html));
+    }
+  }
+
+  // Apply HTML to editor ref (on load/import)
+  useEffect(() => {
+    if (editMode && editorRef.current && editorRef.current.innerHTML !== docHtml) {
+      editorRef.current.innerHTML = docHtml;
+    }
+  }, [editMode, docHtml]);
+
+  function execCommand(cmd: string, val?: string) {
+    editorRef.current?.focus();
+    document.execCommand(cmd, false, val);
+    syncFromEditor();
+  }
+
+  // ── Segments for annotation view ─────────────────────────────────────────
   const segments = useMemo(() => {
-    if (!docText || violations.length === 0) return [{ kind: "plain" as const, text: docText, start: 0, end: docText.length }];
+    if (!docText || violations.length === 0)
+      return [{ kind: "plain" as const, text: docText, start: 0, end: docText.length }];
     type Seg = { kind: "plain" | "ann"; text: string; start: number; end: number; violation?: PolicyViolation };
     const segs: Seg[] = [];
     let cursor = 0;
-    const sorted = [...violations].filter(v => v.start >= 0 && v.end <= docText.length && v.start < v.end).sort((a, b) => a.start - b.start);
+    const sorted = [...violations]
+      .filter(v => v.start >= 0 && v.end <= docText.length && v.start < v.end)
+      .sort((a, b) => a.start - b.start);
     for (const v of sorted) {
       if (v.start < cursor) continue;
       if (v.start > cursor) segs.push({ kind: "plain", text: docText.slice(cursor, v.start), start: cursor, end: v.start });
@@ -137,6 +226,7 @@ export default function Workbench() {
     info:     violations.filter(v => v.severity === "info").length,
   }), [violations]);
 
+  // ── Policy helpers ────────────────────────────────────────────────────────
   async function fetchPolicies() {
     try {
       const res  = await apiRequest("GET", "/api/policies");
@@ -184,24 +274,35 @@ export default function Workbench() {
     }
   }
 
+  // ── Document import ───────────────────────────────────────────────────────
   async function handleDocFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const imported = await importFile(file);
-    if (!imported.text) {
-      toast({ title: "Импорт не удался", description: imported.warnings[0] ?? "Неизвестная ошибка", variant: "destructive" });
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res  = await fetch("/api/import-docx", { method: "POST", body: formData });
+      const data = await res.json() as { html?: string; text?: string; warnings: string[]; message?: string };
+      if (!res.ok) throw new Error(data.message ?? "Ошибка импорта");
+      if (!data.text?.trim()) throw new Error("Файл не содержит текста");
+
+      const name = file.name.replace(/\.[^.]+$/, "");
+      setDocName(name);
+      setDocHtml(data.html ?? "");
+      setDocText(data.text ?? "");
+      reset();
+      setSelected(null);
+
+      if (data.warnings?.length) {
+        toast({ title: "Файл загружен", description: data.warnings.join(" ") });
+      } else {
+        toast({ title: "Документ загружен", description: `«${name}» готов к проверке.` });
+      }
+    } catch (err) {
+      toast({ title: "Ошибка импорта", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
       e.target.value = "";
-      return;
     }
-    if (imported.warnings.length) {
-      toast({ title: "Файл загружен", description: imported.warnings.join(" ") });
-    }
-    setDocName(imported.name);
-    setDocText(imported.text);
-    setDraft(imported.text);
-    reset();
-    setSelected(null);
-    e.target.value = "";
   }
 
   async function handleUrlImport() {
@@ -209,9 +310,11 @@ export default function Workbench() {
     setLinkLoading(true);
     try {
       const res  = await apiRequest("POST", "/api/import-url", { url: linkUrl });
-      const data = await res.json() as { text?: string; name?: string; message?: string };
+      const data = await res.json() as { text?: string; html?: string; name?: string; message?: string };
       if (!res.ok) throw new Error(data.message ?? `HTTP ${res.status}`);
-      setDocName(data.name ?? "документ"); setDocText(data.text ?? ""); setDraft(data.text ?? "");
+      setDocName(data.name ?? "документ");
+      setDocText(data.text ?? "");
+      setDocHtml(data.html ?? data.text?.split("\n\n").map(p => `<p>${p}</p>`).join("") ?? "");
       reset(); setSelected(null); setLinkDialogOpen(false); setLinkUrl("");
     } catch (err) {
       toast({ title: "Ошибка", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
@@ -220,11 +323,43 @@ export default function Workbench() {
     }
   }
 
+  // ── Check ─────────────────────────────────────────────────────────────────
   async function handleCheck() {
     if (!docText.trim() || !activePolicyId) return;
     await check(docText, activePolicyId);
     setPanel("violations");
     toast({ title: "Проверка завершена", description: `Найдено ${violations.length} нарушений.` });
+  }
+
+  // ── Export ────────────────────────────────────────────────────────────────
+  function exportTxt() {
+    const blob = new Blob([docText], { type: "text/plain;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${docName}.txt`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  async function exportDocx() {
+    try {
+      const res = await fetch("/api/export-docx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ html: docHtml, name: docName }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const ext  = res.headers.get("Content-Disposition")?.includes(".docx") ? "docx" : "html";
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${docName}.${ext}`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast({ title: "Документ экспортирован" });
+    } catch (err) {
+      toast({ title: "Ошибка экспорта", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
   }
 
   function scrollToViolation(v: PolicyViolation) {
@@ -236,7 +371,7 @@ export default function Workbench() {
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
 
-      {/* ── Header ─────────────────────────────────────────────────────────────────── */}
+      {/* ── Header ───────────────────────────────────────────────────────────── */}
       <header className="h-14 border-b flex items-center px-4 gap-3 shrink-0 bg-background/80 backdrop-blur">
         <span className="text-primary"><EPCLogo size={30} /></span>
         <div className="leading-none select-none shrink-0">
@@ -251,12 +386,33 @@ export default function Workbench() {
         <div className="ml-auto flex items-center gap-2 shrink-0">
           <input ref={fileDocInput} type="file" accept=".docx,.pdf,.txt,.md" onChange={handleDocFile} className="hidden" />
           <input ref={filePolicyInput} type="file" accept=".docx,.pdf,.txt,.md" onChange={handlePolicyFile} className="hidden" />
+
           <Button variant="outline" size="sm" onClick={() => fileDocInput.current?.click()}>
             <Upload className="h-4 w-4 mr-1.5" />Документ
           </Button>
           <Button variant="outline" size="sm" onClick={() => setLinkDialogOpen(true)}>
             <Link2 className="h-4 w-4 mr-1.5" />Ссылка
           </Button>
+
+          {/* Export dropdown */}
+          {docText && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <FileDown className="h-4 w-4 mr-1.5" />Экспорт
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={exportDocx}>
+                  <FileDown className="h-4 w-4 mr-2" />Скачать DOCX
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={exportTxt}>
+                  <FileText className="h-4 w-4 mr-2" />Скачать TXT
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+
           <Button
             variant="default" size="sm"
             onClick={handleCheck}
@@ -270,7 +426,7 @@ export default function Workbench() {
         </div>
       </header>
 
-      {/* ── AI status bar ────────────────────────────────────────────────────────────────── */}
+      {/* ── AI status bar ─────────────────────────────────────────────────────── */}
       {(checkLoading || checkResult || checkError) && (
         <div className="h-7 border-b px-4 flex items-center gap-2 text-[11px] bg-muted/40 shrink-0">
           <Sparkles className="h-3.5 w-3.5 text-primary shrink-0" />
@@ -291,7 +447,7 @@ export default function Workbench() {
         </div>
       )}
 
-      {/* ── URL dialog ─────────────────────────────────────────────────────────────────── */}
+      {/* ── URL dialog ────────────────────────────────────────────────────────── */}
       <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
@@ -306,7 +462,7 @@ export default function Workbench() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Main layout ─────────────────────────────────────────────────────────────────── */}
+      {/* ── Main layout ───────────────────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* Left sidebar */}
@@ -358,25 +514,60 @@ export default function Workbench() {
               );
             })}
           </nav>
+
+          {/* Edit mode toggle */}
+          {docText && (
+            <div className="p-2 border-t mt-auto">
+              <Button
+                variant={editMode ? "default" : "outline"}
+                size="sm" className="w-full h-8 text-xs"
+                onClick={() => {
+                  if (!editMode) { setEditMode(true); }
+                  else {
+                    // Save: sync from editor
+                    syncFromEditor();
+                    setEditMode(false);
+                    reset();
+                    toast({ title: "Изменения сохранены" });
+                  }
+                }}
+              >
+                {editMode ? <><Save className="h-3.5 w-3.5 mr-1.5" />Сохранить</> : <><PenSquare className="h-3.5 w-3.5 mr-1.5" />Редактировать</>}
+              </Button>
+              {editMode && (
+                <Button variant="ghost" size="sm" className="w-full h-8 text-xs mt-1"
+                  onClick={() => { setEditMode(false); if (editorRef.current) editorRef.current.innerHTML = docHtml; }}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 mr-1.5" />Отмена
+                </Button>
+              )}
+            </div>
+          )}
+
           <div className="absolute top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/30 transition-colors" style={{ left: sidebar.width - 1 }} onMouseDown={sidebar.onMouseDown} />
         </aside>
 
         {/* Document area */}
         <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
-          {editMode && (
-            <div className="h-9 border-b flex items-center gap-1 px-3 bg-muted/20 shrink-0">
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => document.execCommand("bold")}><Bold className="h-3.5 w-3.5" /></Button>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => document.execCommand("italic")}><Italic className="h-3.5 w-3.5" /></Button>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => document.execCommand("insertUnorderedList")}><List className="h-3.5 w-3.5" /></Button>
-              <div className="ml-auto flex items-center gap-1">
-                <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => { setDraft(docText); setEditMode(false); }}><RotateCcw className="h-3 w-3 mr-1" />Отмена</Button>
-                <Button size="sm" className="h-7 text-xs" onClick={() => { setDocText(draft); setEditMode(false); toast({ title: "Сохранено" }); }}><Save className="h-3.5 w-3.5 mr-1" />Сохранить</Button>
-              </div>
-            </div>
-          )}
+          {editMode && <EditorToolbar onCommand={execCommand} />}
 
           <ScrollArea className="flex-1 min-h-0">
-            {!editMode ? (
+            {editMode ? (
+              /* Rich editor */
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                spellCheck
+                className="rich-editor p-6 min-h-full outline-none focus:outline-none"
+                onInput={syncFromEditor}
+                onKeyDown={(e) => {
+                  if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertHTML", false, "&nbsp;&nbsp;&nbsp;&nbsp;"); }
+                }}
+                dangerouslySetInnerHTML={{ __html: docHtml }}
+              />
+            ) : (
+              /* Annotation view (plain text + highlights) */
               <div className="p-6 min-h-full font-mono text-sm leading-relaxed whitespace-pre-wrap select-text break-words">
                 {docText ? segments.map((seg, idx) => {
                   if (seg.kind === "plain") return <span key={idx}>{seg.text}</span>;
@@ -398,24 +589,12 @@ export default function Workbench() {
                   <div className="flex flex-col items-center justify-center h-full min-h-[60vh] text-center text-muted-foreground gap-3">
                     <FileText className="h-12 w-12 opacity-20" />
                     <p className="text-sm">Загрузите документ для проверки</p>
-                    <p className="text-xs">Поддерживаются .docx, .pdf, .txt, .md или Google Docs по ссылке</p>
+                    <p className="text-xs">Поддерживаются .docx (с форматированием), .pdf, .txt, .md или Google Docs по ссылке</p>
                   </div>
                 )}
               </div>
-            ) : (
-              <div className="p-6 min-h-full font-mono text-sm leading-relaxed outline-none whitespace-pre-wrap cursor-text break-words"
-                contentEditable suppressContentEditableWarning
-                onInput={(e) => setDraft((e.target as HTMLDivElement).innerText)}
-              >{docText}</div>
             )}
           </ScrollArea>
-
-          {!editMode && docText && (
-            <button type="button"
-              className="absolute bottom-4 right-4 h-9 w-9 rounded-full bg-primary text-primary-foreground shadow-lg flex items-center justify-center hover:bg-primary/90 transition-colors z-10"
-              onClick={() => setEditMode(true)} title="Редактировать документ"
-            ><PenSquare className="h-4 w-4" /></button>
-          )}
         </main>
 
         {/* Right inspector panel */}
@@ -430,7 +609,6 @@ export default function Workbench() {
                     <h2 className="text-sm font-semibold">Нарушения</h2>
                     <Badge variant="outline" className="text-[10px] shrink-0">{violations.length}</Badge>
                   </div>
-                  {/* Filters — stack vertically to prevent overflow */}
                   <div className="flex flex-col gap-1.5">
                     <Select value={catFilter} onValueChange={setCatFilter}>
                       <SelectTrigger className="h-7 w-full text-xs"><SelectValue /></SelectTrigger>
@@ -465,7 +643,6 @@ export default function Workbench() {
                             }`}
                             onClick={() => scrollToViolation(v)}
                           >
-                            {/* Header row: dot + icon + category + badge + confidence */}
                             <div className="flex items-center gap-1.5 mb-1 min-w-0">
                               <span className={legendDotClass(v)} />
                               {SEVERITY_ICON[v.severity]}
@@ -477,13 +654,10 @@ export default function Workbench() {
                                 <span className="ml-auto text-[10px] text-muted-foreground shrink-0">{Math.round(v.confidence * 100)}%</span>
                               )}
                             </div>
-                            {/* Matched text — wrap instead of truncate */}
                             <div className="text-muted-foreground break-words line-clamp-3">«{v.matchedText}»</div>
-                            {/* Explanation */}
                             {v.explanation && (
                               <div className="text-[10px] text-muted-foreground/70 mt-0.5 break-words line-clamp-3">{v.explanation}</div>
                             )}
-                            {/* Suggestion */}
                             {v.suggestion && (
                               <div className="mt-1 text-[10px] flex items-center gap-1 text-primary min-w-0">
                                 <ChevronRight className="h-3 w-3 shrink-0" />

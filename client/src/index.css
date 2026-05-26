@@ -53,10 +53,45 @@
   body { @apply bg-background text-foreground; font-family: 'Inter', system-ui, sans-serif; }
 }
 
-/* ══════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════
+   Rich Editor — типографика импортированного документа
+   ════════════════════════════════════════════════════════════════ */
+.rich-editor {
+  font-family: 'Times New Roman', Georgia, serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: hsl(var(--foreground));
+}
+.rich-editor h1 { font-size: 1.75em; font-weight: 700; margin: 1.2em 0 0.5em; line-height: 1.2; }
+.rich-editor h2 { font-size: 1.4em;  font-weight: 700; margin: 1.1em 0 0.4em; line-height: 1.25; }
+.rich-editor h3 { font-size: 1.15em; font-weight: 600; margin: 1em 0 0.35em; }
+.rich-editor h4 { font-size: 1em;    font-weight: 600; margin: 0.9em 0 0.3em; }
+.rich-editor p  { margin: 0 0 0.85em; }
+.rich-editor ul { list-style: disc;    padding-left: 1.8em; margin: 0.5em 0 0.85em; }
+.rich-editor ol { list-style: decimal; padding-left: 1.8em; margin: 0.5em 0 0.85em; }
+.rich-editor li { margin-bottom: 0.25em; }
+.rich-editor blockquote {
+  border-left: 3px solid hsl(var(--primary));
+  margin: 0.75em 0;
+  padding: 0.5em 1em;
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+}
+.rich-editor strong { font-weight: 700; }
+.rich-editor em     { font-style: italic; }
+.rich-editor u      { text-decoration: underline; }
+.rich-editor s      { text-decoration: line-through; }
+.rich-editor code   {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.88em;
+  background: hsl(var(--muted));
+  padding: 0.1em 0.4em;
+  border-radius: 3px;
+}
+
+/* ════════════════════════════════════════════════════════════════
    Violation annotations — LIGHT MODE
-   Фон: очень светлый, тонированный. Текст наследуется (тёмный).
-   ══════════════════════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════════ */
 .ann-stop-word    { background-color: hsl(0   80% 92%);  border-bottom: 2px solid hsl(0   72% 51%); border-radius: 2px; cursor: pointer; }
 .ann-style        { background-color: hsl(280 55% 92%);  border-bottom: 2px solid hsl(280 50% 55%); border-radius: 2px; cursor: pointer; }
 .ann-abbreviation { background-color: hsl(200 70% 90%);  border-bottom: 2px solid hsl(200 65% 50%); border-radius: 2px; cursor: pointer; }
@@ -66,16 +101,13 @@
 .ann-factual      { background-color: hsl(15  80% 90%);  border-bottom: 2px solid hsl(15  70% 50%); border-radius: 2px; cursor: pointer; }
 .ann-custom       { background-color: hsl(240 50% 91%);  border-bottom: 2px solid hsl(240 45% 55%); border-radius: 2px; cursor: pointer; }
 
-/* Focus / selected states — light */
 .ann-focused  { outline: 2px solid hsl(var(--primary)); outline-offset: 1px; }
 .ann-selected { outline: 2px solid hsl(var(--primary)); outline-offset: 1px;
                 background-color: hsl(var(--primary) / 0.15); }
 
-/* ══════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════
    Violation annotations — DARK MODE
-   Фон: тёмный, насыщенный. Граница: яркая. Цвет текста явно задан
-   как светлый, чтобы аннотация не перекрывала текст документа.
-   ══════════════════════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════════ */
 .dark .ann-stop-word    { background-color: hsl(0   70% 22%); border-bottom-color: hsl(0   72% 60%); color: hsl(0 0% 88%); }
 .dark .ann-style        { background-color: hsl(280 45% 22%); border-bottom-color: hsl(280 55% 70%); color: hsl(0 0% 88%); }
 .dark .ann-abbreviation { background-color: hsl(200 60% 20%); border-bottom-color: hsl(200 65% 65%); color: hsl(0 0% 88%); }
@@ -85,7 +117,6 @@
 .dark .ann-factual      { background-color: hsl(15  65% 20%); border-bottom-color: hsl(15  70% 60%); color: hsl(0 0% 88%); }
 .dark .ann-custom       { background-color: hsl(240 40% 22%); border-bottom-color: hsl(240 50% 70%); color: hsl(0 0% 88%); }
 
-/* Focus / selected states — dark */
 .dark .ann-focused  { outline-color: hsl(var(--primary)); }
 .dark .ann-selected { outline-color: hsl(var(--primary));
                       background-color: hsl(var(--primary) / 0.25);

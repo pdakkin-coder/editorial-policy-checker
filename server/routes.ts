@@ -8,8 +8,9 @@
  * POST /api/policies/:id/parse   — (пере)парсить правила через AI
  * POST /api/check                — проверить документ по политике
  * POST /api/import-url           — импорт по URL
- * POST /api/import-docx          — извлечь текст из DOCX (для редактируемого документа)
- * POST /api/import-pdf           — извлечь текст из PDF  (для редактируемого документа)
+ * POST /api/import-docx          — извлечь HTML-структуру из DOCX (заголовки, списки, форматирование)
+ * POST /api/import-pdf           — извлечь текст из PDF
+ * POST /api/export-docx          — экспорт HTML-контента в DOCX
  */
 
 import express, { type Express } from "express";
@@ -25,6 +26,24 @@ import type { CheckDocumentRequest, PolicyDocument } from "../shared/types.js";
 const LOG    = "[routes]";
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
 
+// ── HTML → plain text (for checker) ──────────────────────────────────────────
+export function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/h[1-6]>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 // ── Text extraction helper ───────────────────────────────────────────────────
 async function extractText(
   buffer:       Buffer,
@@ -35,7 +54,6 @@ async function extractText(
 
   if (mimetype.includes("wordprocessingml") || name.endsWith(".docx")) {
     const r = await mammoth.extractRawText({ buffer });
-    console.info(`${LOG} mammoth: ${r.value.length} chars from ${originalname}`);
     return {
       text:     r.value,
       warnings: r.messages.filter((m) => m.type === "warning").map((m) => m.message),
@@ -44,11 +62,8 @@ async function extractText(
 
   if (mimetype === "application/pdf" || name.endsWith(".pdf")) {
     const r = await pdfParse(buffer);
-    console.info(`${LOG} pdf-parse: ${r.text.length} chars, ${r.numpages} pages from ${originalname}`);
     const warnings: string[] = [];
-    if (!r.text.trim()) {
-      warnings.push("Документ выглядит как скан — текстовый слой не найден.");
-    }
+    if (!r.text.trim()) warnings.push("Документ выглядит как скан — текстовый слой не найден.");
     return { text: r.text, warnings };
   }
 
@@ -56,42 +71,130 @@ async function extractText(
     return { text: buffer.toString("utf-8"), warnings: [] };
   }
 
-  console.warn(`${LOG} unknown mime "${mimetype}" for "${originalname}" — trying UTF-8`);
   return { text: buffer.toString("utf-8"), warnings: [`Неизвестный тип файла: ${mimetype}`] };
+}
+
+// ── DOCX → HTML (структурированный импорт) ───────────────────────────────────
+async function extractHtml(
+  buffer: Buffer,
+  originalname: string,
+  mimetype: string,
+): Promise<{ html: string; text: string; warnings: string[] }> {
+  const name = originalname.toLowerCase();
+
+  if (mimetype.includes("wordprocessingml") || name.endsWith(".docx")) {
+    const styleMap = [
+      "p[style-name='Heading 1'] => h1:fresh",
+      "p[style-name='Heading 2'] => h2:fresh",
+      "p[style-name='Heading 3'] => h3:fresh",
+      "p[style-name='Heading 4'] => h4:fresh",
+      "p[style-name='Заголовок 1'] => h1:fresh",
+      "p[style-name='Заголовок 2'] => h2:fresh",
+      "p[style-name='Заголовок 3'] => h3:fresh",
+      "p[style-name='Заголовок 4'] => h4:fresh",
+      "p[style-name='Title'] => h1:fresh",
+      "b => strong",
+      "i => em",
+    ];
+    const r = await mammoth.convertToHtml({ buffer }, { styleMap });
+    const html = r.value;
+    const text = htmlToPlainText(html);
+    console.info(`${LOG} mammoth HTML: ${html.length} chars, text: ${text.length} chars from ${originalname}`);
+    return {
+      html,
+      text,
+      warnings: r.messages.filter((m) => m.type === "warning").map((m) => m.message),
+    };
+  }
+
+  // PDF — возвращаем plain text обёрнутый в параграфы
+  if (mimetype === "application/pdf" || name.endsWith(".pdf")) {
+    const r = await pdfParse(buffer);
+    const warnings: string[] = [];
+    if (!r.text.trim()) warnings.push("Скан-PDF: текстовый слой не найден.");
+    const html = r.text
+      .split(/\n{2,}/)
+      .map((para) => `<p>${para.replace(/\n/g, "<br>")}</p>`)
+      .join("\n");
+    return { html, text: r.text, warnings };
+  }
+
+  // TXT / MD — plain text → параграфы
+  const text = buffer.toString("utf-8");
+  const html = text
+    .split(/\n{2,}/)
+    .map((para) => `<p>${para.replace(/\n/g, "<br>")}</p>`)
+    .join("\n");
+  return { html, text, warnings: [] };
 }
 
 export function registerRoutes(app: Express): void {
 
-  // ── Import DOCX as plain text (for editable document) ────────────────────
+  // ── Import DOCX/PDF/TXT as structured HTML ────────────────────────────────
   app.post("/api/import-docx", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ message: "Файл не предоставлен" });
     try {
-      const { text, warnings } = await extractText(
+      const result = await extractHtml(
         req.file.buffer, req.file.originalname, req.file.mimetype,
       );
-      if (!text.trim()) {
-        return res.status(422).json({ message: "DOCX не содержит текста." });
+      if (!result.text.trim()) {
+        return res.status(422).json({ message: "Файл не содержит текста." });
       }
-      return res.json({ text, warnings });
+      return res.json(result);
     } catch (err) {
-      console.error(`${LOG} import-docx error:`, err instanceof Error ? err.message : err);
       return res.status(500).json({ message: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  // ── Import PDF as plain text (for editable document) ─────────────────────
+  // ── Import PDF as plain text (legacy) ────────────────────────────────────
   app.post("/api/import-pdf", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ message: "Файл не предоставлен" });
     try {
-      const { text, warnings } = await extractText(
+      const result = await extractHtml(
         req.file.buffer, req.file.originalname, req.file.mimetype,
       );
-      if (!text.trim()) {
-        return res.status(422).json({ message: "Скан-PDF: текстовый слой не найден. Попробуйте скопировать текст вручную." });
+      if (!result.text.trim()) {
+        return res.status(422).json({ message: "Скан-PDF: текстовый слой не найден." });
       }
-      return res.json({ text, warnings });
+      return res.json(result);
     } catch (err) {
-      console.error(`${LOG} import-pdf error:`, err instanceof Error ? err.message : err);
+      return res.status(500).json({ message: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Export HTML → DOCX ────────────────────────────────────────────────────
+  // Генерирует DOCX на сервере через mammoth-совместимый HTML → docx
+  // Используем встроенный модуль (htmlDocx не нужен: клиент сам делает Blob)
+  // Сервер просто возвращает очищенный HTML — клиент скачает его как .html
+  // или конвертирует через browser API.
+  // Для настоящего DOCX-экспорта клиент POST-ит сюда html, мы пишем .docx.
+  app.post("/api/export-docx", express.json({ limit: "10mb" }), async (req, res) => {
+    const { html, name } = req.body as { html: string; name: string };
+    if (!html) return res.status(400).json({ message: "html обязателен" });
+    try {
+      // Используем html-to-docx (если доступен), иначе возвращаем HTML как fallback
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let htmlToDocx: any;
+      try { htmlToDocx = (await import("html-to-docx" as string)).default; } catch { htmlToDocx = null; }
+
+      if (htmlToDocx) {
+        const docxBuffer = await htmlToDocx(html, null, {
+          table: { row: { cantSplit: true } },
+          footer: true,
+          pageNumber: false,
+          font: "Times New Roman",
+          fontSize: 24, // half-points → 12pt
+        });
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(name ?? "document")}.docx"`);
+        return res.end(docxBuffer);
+      }
+
+      // Fallback: возвращаем HTML-файл
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(name ?? "document")}.html"`);
+      return res.end(html);
+    } catch (err) {
       return res.status(500).json({ message: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -104,10 +207,8 @@ export function registerRoutes(app: Express): void {
 
       if (req.file) {
         name = req.file.originalname.replace(/\.[^.]+$/, "");
-        console.info(`${LOG} policy upload: "${req.file.originalname}" (${req.file.mimetype}, ${req.file.size} bytes)`);
         const extracted = await extractText(req.file.buffer, req.file.originalname, req.file.mimetype);
         rawText = extracted.text;
-        console.info(`${LOG} extracted text: ${rawText.length} chars`);
       } else if (req.body?.rawText) {
         rawText = req.body.rawText;
         name    = req.body.name ?? name;
@@ -126,7 +227,6 @@ export function registerRoutes(app: Express): void {
       savePolicy(doc);
       return res.json(doc);
     } catch (err) {
-      console.error(`${LOG} policy upload error:`, err instanceof Error ? err.message : err);
       return res.status(500).json({ message: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -159,7 +259,6 @@ export function registerRoutes(app: Express): void {
     if (!process.env.GEMINI_API_KEY) {
       return res.status(501).json({ message: "GEMINI_API_KEY не задан" });
     }
-    console.info(`${LOG} /parse triggered for "${doc.name}" (${doc.rawText.length} chars)`);
     const result = await parsePolicy({ rawText: doc.rawText, name: doc.name });
     if (result.error) return res.status(502).json(result);
     doc.rules    = result.rules;
@@ -199,7 +298,9 @@ export function registerRoutes(app: Express): void {
 
       const text = await r.text();
       const name = new URL(fetchUrl).pathname.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "документ";
-      return res.json({ text, name, warnings: [] });
+      // Wrap plain text in paragraphs for rich editor
+      const html = text.split(/\n{2,}/).map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("\n");
+      return res.json({ text, html, name, warnings: [] });
     } catch (err) {
       return res.status(500).json({ message: err instanceof Error ? err.message : String(err) });
     }
