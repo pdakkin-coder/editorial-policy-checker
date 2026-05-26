@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  FileText, Upload, Download, Link2, Sun, Moon, Sparkles, BookOpen,
+  FileText, Upload, Link2, Sun, Moon, Sparkles, BookOpen,
   AlertTriangle, CheckCircle2, Info, ChevronRight, Cpu, FileDown,
   PenSquare, RotateCcw,
 } from "lucide-react";
@@ -44,6 +44,27 @@ const SEVERITY_ICON = {
   info:    <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />,
 };
 
+// Prose CSS classes applied to the HTML view container
+const PROSE_CLASS = [
+  "prose prose-sm dark:prose-invert max-w-none",
+  "[&_h1]:text-2xl [&_h1]:font-bold [&_h1]:mb-3 [&_h1]:mt-6 [&_h1]:leading-tight",
+  "[&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mb-2 [&_h2]:mt-5 [&_h2]:leading-tight",
+  "[&_h3]:text-lg [&_h3]:font-semibold [&_h3]:mb-2 [&_h3]:mt-4",
+  "[&_h4]:text-base [&_h4]:font-semibold [&_h4]:mb-1 [&_h4]:mt-3",
+  "[&_p]:mb-3",
+  "[&_ul]:list-disc [&_ul]:pl-5 [&_ul]:mb-3 [&_ul]:space-y-1",
+  "[&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:mb-3 [&_ol]:space-y-1",
+  "[&_li]:leading-relaxed",
+  "[&_strong]:font-semibold [&_b]:font-semibold",
+  "[&_em]:italic [&_i]:italic",
+  "[&_u]:underline",
+  "[&_s]:line-through",
+  "[&_blockquote]:border-l-4 [&_blockquote]:border-muted-foreground/30 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:my-3",
+  "[&_table]:border-collapse [&_table]:w-full [&_table]:my-3",
+  "[&_td]:border [&_td]:border-border [&_td]:px-3 [&_td]:py-2 [&_td]:text-sm",
+  "[&_th]:border [&_th]:border-border [&_th]:px-3 [&_th]:py-2 [&_th]:font-semibold [&_th]:bg-muted/50",
+].join(" ");
+
 function annClass(v: PolicyViolation): string { return `ann-${v.category}`; }
 function legendDotClass(v: PolicyViolation): string {
   return `legend-dot legend-dot-${v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info"}`;
@@ -53,10 +74,7 @@ function legendDotClass(v: PolicyViolation): string {
 function ExportMenu({ onExport, disabled }: { onExport: (f: "docx" | "html" | "txt") => void; disabled: boolean }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
   const close = useCallback(() => setOpen(false), []);
-
-  // Close on outside click
   useMemo(() => {
     function handler(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
@@ -64,13 +82,11 @@ function ExportMenu({ onExport, disabled }: { onExport: (f: "docx" | "html" | "t
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
-
   const items: { label: string; fmt: "docx" | "html" | "txt" }[] = [
     { label: ".docx (Word)", fmt: "docx" },
     { label: ".html",        fmt: "html" },
     { label: ".txt",         fmt: "txt"  },
   ];
-
   return (
     <div ref={ref} className="relative">
       <Button variant="outline" size="sm" disabled={disabled} onClick={() => setOpen((v) => !v)}>
@@ -115,6 +131,130 @@ function useDragResize(initial: number, min: number, max: number, dir: "left" | 
   return { width, onMouseDown };
 }
 
+// ── Annotated HTML view ───────────────────────────────────────────────────────
+// When violations exist we inject <mark> spans into the HTML via DOM manipulation
+// rather than slicing plain text, so heading/paragraph structure is preserved.
+function AnnotatedHtmlView({
+  html,
+  violations,
+  hoveredId,
+  selected,
+  onHover,
+  onSelect,
+  spanRefs,
+}: {
+  html:       string;
+  violations: PolicyViolation[];
+  hoveredId:  string | null;
+  selected:   { start: number; end: number } | null;
+  onHover:    (id: string | null) => void;
+  onSelect:   (v: PolicyViolation) => void;
+  spanRefs:   React.MutableRefObject<Map<string, HTMLSpanElement>>;
+}) {
+  // Build annotated HTML by injecting <mark data-vid="..."> into the plain-text
+  // offsets. We work on the innerText representation mapped back to HTML.
+  // Simplest reliable approach: render HTML, collect text nodes, apply spans.
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Re-annotate whenever violations/html change
+  useMemo(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    // Remove any previous marks without resetting innerHTML
+    container.querySelectorAll("mark[data-vid]").forEach((el) => {
+      const parent = el.parentNode;
+      if (!parent) return;
+      while (el.firstChild) parent.insertBefore(el.firstChild, el);
+      parent.removeChild(el);
+    });
+    if (!violations.length) return;
+
+    // Collect all text nodes in document order and their cumulative offsets
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const nodes: { node: Text; start: number; end: number }[] = [];
+    let offset = 0;
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      const t = node as Text;
+      const len = t.textContent?.length ?? 0;
+      nodes.push({ node: t, start: offset, end: offset + len });
+      offset += len;
+    }
+
+    // Sort violations by start desc so later insertions don't shift offsets
+    const sorted = [...violations]
+      .filter(v => v.start >= 0 && v.end > v.start && v.end <= offset)
+      .sort((a, b) => b.start - a.start);
+
+    for (const v of sorted) {
+      // Find nodes that overlap [v.start, v.end)
+      const overlapping = nodes.filter(n => n.end > v.start && n.start < v.end);
+      if (!overlapping.length) continue;
+
+      // For simplicity handle single-node case (most violations are inline)
+      if (overlapping.length === 1) {
+        const { node: textNode, start: nodeStart } = overlapping[0];
+        const localStart = v.start - nodeStart;
+        const localEnd   = v.end   - nodeStart;
+        const text = textNode.textContent ?? "";
+        if (localStart < 0 || localEnd > text.length) continue;
+
+        const before = document.createTextNode(text.slice(0, localStart));
+        const mark   = document.createElement("mark");
+        mark.dataset.vid = v.id;
+        mark.textContent = text.slice(localStart, localEnd);
+
+        const after  = document.createTextNode(text.slice(localEnd));
+        const parent = textNode.parentNode;
+        if (!parent) continue;
+        parent.insertBefore(before, textNode);
+        parent.insertBefore(mark, textNode);
+        parent.insertBefore(after, textNode);
+        parent.removeChild(textNode);
+
+        // Update node list offsets so subsequent iterations still work
+        overlapping[0].node = after as unknown as Text;
+        overlapping[0].start = nodeStart + localEnd;
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [html, violations]);
+
+  // Attach event handlers to marks after render
+  useMemo(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    container.querySelectorAll<HTMLElement>("mark[data-vid]").forEach((el) => {
+      const vid = el.dataset.vid!;
+      const v   = violations.find(x => x.id === vid);
+      if (!v) return;
+
+      // Apply CSS classes
+      el.className = [
+        annClass(v),
+        hoveredId === vid ? "ann-focused" : "",
+        (selected?.start === v.start && selected?.end === v.end) ? "ann-selected" : "",
+      ].filter(Boolean).join(" ");
+
+      // Register in spanRefs
+      spanRefs.current.set(vid, el as HTMLSpanElement);
+
+      el.onmouseenter = () => onHover(vid);
+      el.onmouseleave = () => onHover(null);
+      el.onclick      = () => onSelect(v);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [violations, hoveredId, selected]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={`p-6 min-h-full text-sm leading-relaxed select-text ${PROSE_CLASS}`}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
 export default function Workbench() {
   const { theme, toggle }    = useTheme();
   const { toast }            = useToast();
@@ -147,25 +287,6 @@ export default function Workbench() {
   const { violations, loading: checkLoading, error: checkError, result: checkResult, activeModel, check, reset } = useChecker();
 
   const spanRefs = useRef<Map<string, HTMLSpanElement>>(new Map());
-
-  const segments = useMemo(() => {
-    if (!docText || violations.length === 0)
-      return [{ kind: "plain" as const, text: docText, start: 0, end: docText.length }];
-    type Seg = { kind: "plain" | "ann"; text: string; start: number; end: number; violation?: PolicyViolation };
-    const segs: Seg[] = [];
-    let cursor = 0;
-    const sorted = [...violations]
-      .filter(v => v.start >= 0 && v.end <= docText.length && v.start < v.end)
-      .sort((a, b) => a.start - b.start);
-    for (const v of sorted) {
-      if (v.start < cursor) continue;
-      if (v.start > cursor) segs.push({ kind: "plain", text: docText.slice(cursor, v.start), start: cursor, end: v.start });
-      segs.push({ kind: "ann", text: docText.slice(v.start, v.end), start: v.start, end: v.end, violation: v });
-      cursor = v.end;
-    }
-    if (cursor < docText.length) segs.push({ kind: "plain", text: docText.slice(cursor), start: cursor, end: docText.length });
-    return segs;
-  }, [docText, violations]);
 
   const filteredViolations = useMemo(() => violations.filter(v => {
     if (catFilter !== "all" && v.category !== catFilter) return false;
@@ -329,7 +450,7 @@ export default function Workbench() {
 
   function scrollToViolation(v: PolicyViolation) {
     const el = spanRefs.current.get(v.id);
-    if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.focus({ preventScroll: true }); }
+    if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); }
     setSelected({ start: v.start, end: v.end });
   }
 
@@ -498,26 +619,16 @@ export default function Workbench() {
             />
           ) : (
             <ScrollArea className="flex-1 min-h-0">
-              {docText ? (
-                <div className="p-6 min-h-full font-mono text-sm leading-relaxed whitespace-pre-wrap select-text break-words">
-                  {segments.map((seg, idx) => {
-                    if (seg.kind === "plain") return <span key={idx}>{seg.text}</span>;
-                    const v = seg.violation!;
-                    const isHov = hoveredId === v.id;
-                    const isSel = selected?.start === seg.start && selected?.end === seg.end;
-                    return (
-                      <span key={idx}
-                        ref={(el) => { if (el) spanRefs.current.set(v.id, el); else spanRefs.current.delete(v.id); }}
-                        className={[annClass(v), isHov ? "ann-focused" : "", isSel ? "ann-selected" : ""].filter(Boolean).join(" ")}
-                        tabIndex={0} role="mark"
-                        aria-label={`${CATEGORY_LABELS[v.category]}: ${v.matchedText}`}
-                        onMouseEnter={() => setHoveredId(v.id)}
-                        onMouseLeave={() => setHoveredId(null)}
-                        onClick={() => { setSelected({ start: v.start, end: v.end }); setPanel("violations"); }}
-                      >{seg.text}</span>
-                    );
-                  })}
-                </div>
+              {docHtml ? (
+                <AnnotatedHtmlView
+                  html={docHtml}
+                  violations={violations}
+                  hoveredId={hoveredId}
+                  selected={selected}
+                  onHover={setHoveredId}
+                  onSelect={(v) => { setSelected({ start: v.start, end: v.end }); setPanel("violations"); }}
+                  spanRefs={spanRefs}
+                />
               ) : (
                 <div className="flex flex-col items-center justify-center h-full min-h-[60vh] text-center text-muted-foreground gap-3">
                   <FileText className="h-12 w-12 opacity-20" />
