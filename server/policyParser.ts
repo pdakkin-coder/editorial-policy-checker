@@ -1,5 +1,10 @@
 /**
  * policyParser.ts
+ *
+ * Извлекает ВСЕ правила из документа редакционной политики.
+ * Если документ длинный — делит его на чанки по ~6000 символов
+ * и обрабатывает каждый чанк отдельным запросом к модели,
+ * затем дедуплицирует правила по имени/описанию.
  */
 
 import { callGemini } from "./geminiRouter.js";
@@ -7,40 +12,57 @@ import type { ParsePolicyRequest, ParsePolicyResponse, PolicyRule } from "../sha
 
 const LOG = "[policy-parser]";
 
-function buildPrompt(name: string, text: string): string {
+// Максимальный размер одного чанка (символов)
+const CHUNK_SIZE = 6000;
+// Перекрытие между чанками чтобы не потерять правила на границах
+const CHUNK_OVERLAP = 400;
+
+function buildPrompt(name: string, chunkText: string, chunkIndex: number, totalChunks: number): string {
+  const chunkNote = totalChunks > 1
+    ? `(ФРАГМЕНТ ${chunkIndex + 1} из ${totalChunks} — обрабатывай ТОЛЬКО этот фрагмент)`
+    : "(полный документ)";
+
   return (
-    "Ty opytnyy redaktor i lingvist. Tvoya zadacha — izvlechʹ VSE pravila iz dokumenta redaktsionnoy politiki.\n\n" +
-    "NAZVANIE DOKUMENTA: " + name + "\n\n" +
-    "POLNYY TEKST DOKUMENTA:\n" +
-    "===BEGIN===\n" +
-    text + "\n" +
-    "===END===\n\n" +
-    "Zadacha: proanaliziruy kazhdyy razdel dokumenta i izvleki iz nego redaktsionnye pravila.\n" +
-    "Pravilo — eto lyuboe trebovaniye k tekstam: zapreshchonnye slova, stilistika, ton, tipografika,\n" +
-    "struktura materiala, trebovaniya k zagolovkam, abzatsam, ssylkam, izobrazeniyam, tsitirovanniyu i t.d.\n\n" +
-    "VERNI TOLʹKO JSON (bez code-blokov, bez obʹyasneniy do ili posle).\n" +
-    "Format otveta:\n" +
-    "{\n" +
-    "  \"rules\": [\n" +
-    "    {\n" +
-    "      \"id\": \"rule-1\",\n" +
-    "      \"category\": \"<odno iz: stop-word | style | tone | structure | typography | abbreviation | factual | custom>\",\n" +
-    "      \"name\": \"<kratkoe nazvanie pravila>\",\n" +
-    "      \"description\": \"<podrobnoe opisanie 2-4 predlozeniya>\",\n" +
-    "      \"severity\": \"<odno iz: error | warning | info>\",\n" +
-    "      \"examples\": [\n" +
-    "        { \"bad\": \"<primer narusheniya>\", \"good\": \"<pravilnyy variant>\" }\n" +
-    "      ],\n" +
-    "      \"source\": \"<ssylka na razdel dokumenta ili pustaya stroka>\"\n" +
-    "    }\n" +
-    "  ],\n" +
-    "  \"summary\": \"<2-3 predlozeniya: o chom eta politika i dlya kakikh tekstov>\"\n" +
-    "}\n\n" +
-    "VAZNO:\n" +
-    "1. Otvet DOLZHEN nachinatsya s { i zakanchivatsya na } — nichego lishnego\n" +
-    "2. Ignoriruй lyubye PDF-metadannye (format, version, page_count, producer i t.p.)\n" +
-    "3. Esli v razdele net yavnykh pravil — sformuliruй ikh iz smysla teksta\n" +
-    "4. Izvleki minimum 5 pravil esli dokument soderzhit khoby redaktsionnye trebovaniya\n"
+    `Ты — опытный редактор и лингвист. Твоя задача — извлечь ВСЕ правила из фрагмента документа редакционной политики.\n\n` +
+    `НАЗВАНИЕ ДОКУМЕНТА: ${name} ${chunkNote}\n\n` +
+    `ТЕКСТ ФРАГМЕНТА:\n===BEGIN===\n${chunkText}\n===END===\n\n` +
+    `ЗАДАЧА:\n` +
+    `Проанализируй каждый раздел фрагмента и извлеки из него редакционные правила.\n` +
+    `Правило — это любое требование к текстам: запрещённые слова, стилистика, тон,\n` +
+    `типографика, структура материала, требования к заголовкам, абзацам, ссылкам,\n` +
+    `изображениям, цитированию, оформлению списков, таблиц, сносок и т.д.\n\n` +
+    `ВЕРНИ ТОЛЬКО JSON (без code-блоков, без объяснений до или после).\n` +
+    `Формат ответа:\n` +
+    `{\n` +
+    `  "rules": [\n` +
+    `    {\n` +
+    `      "id": "rule-${chunkIndex}-1",\n` +
+    `      "category": "<одно из: stop-word | style | tone | structure | typography | abbreviation | factual | custom>",\n` +
+    `      "name": "<краткое название правила>",\n` +
+    `      "description": "<подробное описание 2-4 предложения>",\n` +
+    `      "severity": "<одно из: error | warning | info>",\n` +
+    `      "examples": [\n` +
+    `        { "bad": "<пример нарушения>", "good": "<правильный вариант>" }\n` +
+    `      ],\n` +
+    `      "source": "<ссылка на раздел документа или пустая строка>"\n` +
+    `    }\n` +
+    `  ],\n` +
+    `  "summary": "<только для первого фрагмента: 2-3 предложения о документе; для остальных — пустая строка>"\n` +
+    `}\n\n` +
+    `ВАЖНО:\n` +
+    `1. Ответ ДОЛЖЕН начинаться с { и заканчиваться на } — ничего лишнего\n` +
+    `2. Игнорируй PDF-метаданные (format, version, page_count, producer и т.п.)\n` +
+    `3. Если в разделе нет явных правил — сформулируй их из смысла текста\n` +
+    `4. НЕ ОСТАНАВЛИВАЙСЯ посередине — обработай весь фрагмент до конца\n` +
+    `5. Каждое отдельное требование = отдельное правило; не объединяй несвязанные требования\n`
+  );
+}
+
+function buildSummaryPrompt(name: string, allRules: PolicyRule[]): string {
+  return (
+    `Ты — редактор. Вот ${allRules.length} правил, извлечённых из документа редакционной политики «${name}».\n` +
+    `Напиши краткое резюме документа (2-3 предложения): о чём эта политика и для каких текстов предназначена.\n` +
+    `Верни ТОЛЬКО JSON: { "summary": "..." }\n`
   );
 }
 
@@ -52,55 +74,110 @@ function extractJson(raw: string): string {
   return s;
 }
 
+/** Разбивает текст на чанки с перекрытием по границам абзацев */
+function splitIntoChunks(text: string): string[] {
+  if (text.length <= CHUNK_SIZE) return [text];
+
+  const chunks: string[] = [];
+  let pos = 0;
+
+  while (pos < text.length) {
+    let end = pos + CHUNK_SIZE;
+    if (end >= text.length) {
+      chunks.push(text.slice(pos));
+      break;
+    }
+    // Ищем конец абзаца (\n\n) назад от end
+    const boundary = text.lastIndexOf("\n\n", end);
+    if (boundary > pos + CHUNK_SIZE / 2) {
+      end = boundary + 2;
+    }
+    chunks.push(text.slice(pos, end));
+    pos = Math.max(pos + 1, end - CHUNK_OVERLAP);
+  }
+
+  return chunks;
+}
+
+/** Дедуплицирует правила: удаляет дубли по нормализованному имени */
+function deduplicateRules(rules: PolicyRule[]): PolicyRule[] {
+  const seen = new Set<string>();
+  const result: PolicyRule[] = [];
+  for (const r of rules) {
+    const key = (r.name + " " + r.description).toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(r);
+    }
+  }
+  return result;
+}
+
 export async function parsePolicy(
   req: ParsePolicyRequest,
 ): Promise<ParsePolicyResponse> {
   const apiKey = process.env.GEMINI_API_KEY!;
-
   const docText = req.rawText;
   console.info(`${LOG} starting parse «${req.name}» (${docText.length} chars)`);
 
-  const contents = [
-    { role: "user", parts: [{ text: buildPrompt(req.name, docText) }] },
-  ];
-  const generationConfig = { temperature: 0.1 };
+  const chunks = splitIntoChunks(docText);
+  console.info(`${LOG} split into ${chunks.length} chunk(s)`);
 
-  try {
-    const result = await callGemini(contents, generationConfig, apiKey);
+  const allRules: PolicyRule[] = [];
+  let firstSummary = "";
 
-    console.info(`${LOG} raw response from ${result.model} (${result.raw.length} chars):`);
-    console.info(`${LOG} --- RAW START ---`);
-    console.info(result.raw.slice(0, 4000));
-    if (result.raw.length > 4000)
-      console.info(`${LOG} ... [truncated, total ${result.raw.length} chars]`);
-    console.info(`${LOG} --- RAW END ---`);
+  for (let i = 0; i < chunks.length; i++) {
+    const prompt = buildPrompt(req.name, chunks[i], i, chunks.length);
+    console.info(`${LOG} chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars)`);
 
-    const jsonStr = extractJson(result.raw);
-    console.info(`${LOG} extracted JSON (${jsonStr.length} chars)`);
-
-    let parsed: { rules: PolicyRule[]; summary?: string };
     try {
-      parsed = JSON.parse(jsonStr) as { rules: PolicyRule[]; summary?: string };
-    } catch (jsonErr) {
-      console.error(`${LOG} JSON.parse FAILED:`, jsonErr instanceof Error ? jsonErr.message : jsonErr);
-      console.error(`${LOG} extracted snippet: ${jsonStr.slice(0, 500)}`);
-      throw new Error(
-        `JSON parse error: ${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}. ` +
-        `Raw (first 200): ${result.raw.slice(0, 200)}`
+      const result = await callGemini(
+        [{ role: "user", parts: [{ text: prompt }] }],
+        { temperature: 0.1 },
+        apiKey,
       );
+
+      console.info(`${LOG} chunk ${i + 1} raw (${result.raw.length} chars): ${result.raw.slice(0, 300)}`);
+
+      const jsonStr = extractJson(result.raw);
+      const parsed = JSON.parse(jsonStr) as { rules: PolicyRule[]; summary?: string };
+
+      const chunkRules = (parsed.rules ?? []).map((r, j) => ({
+        ...r,
+        id: `rule-${i}-${j + 1}`,
+      }));
+
+      console.info(`${LOG} chunk ${i + 1}: extracted ${chunkRules.length} rules`);
+      allRules.push(...chunkRules);
+
+      if (i === 0 && parsed.summary) firstSummary = parsed.summary;
+    } catch (err) {
+      console.error(`${LOG} chunk ${i + 1} FAILED:`, err instanceof Error ? err.message : err);
+      // Продолжаем с остальными чанками
     }
-
-    const ruleCount = parsed.rules?.length ?? 0;
-    console.info(`${LOG} parsed OK — ${ruleCount} rules, summary: ${parsed.summary?.slice(0, 80) ?? "(none)"}`);
-
-    if (ruleCount === 0) {
-      console.warn(`${LOG} WARNING: 0 rules. Full object:`);
-      console.warn(JSON.stringify(parsed, null, 2).slice(0, 1000));
-    }
-
-    return { rules: parsed.rules ?? [], summary: parsed.summary, _label: result.label };
-  } catch (err) {
-    console.error(`${LOG} ERROR:`, err instanceof Error ? err.message : err);
-    return { rules: [], error: err instanceof Error ? err.message : String(err) };
   }
+
+  const deduped = deduplicateRules(allRules);
+  console.info(`${LOG} total rules before dedup: ${allRules.length}, after: ${deduped.length}`);
+
+  // Если summary не получен из первого чанка — запрашиваем отдельно
+  let summary = firstSummary;
+  if (!summary && deduped.length > 0) {
+    try {
+      const sumResult = await callGemini(
+        [{ role: "user", parts: [{ text: buildSummaryPrompt(req.name, deduped) }] }],
+        { temperature: 0.1 },
+        apiKey,
+      );
+      const sumJson = extractJson(sumResult.raw);
+      const sumParsed = JSON.parse(sumJson) as { summary?: string };
+      summary = sumParsed.summary ?? "";
+    } catch (_) {}
+  }
+
+  if (deduped.length === 0) {
+    return { rules: [], summary, error: "Не удалось извлечь правила из документа." };
+  }
+
+  return { rules: deduped, summary };
 }

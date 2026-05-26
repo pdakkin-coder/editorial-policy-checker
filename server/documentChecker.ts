@@ -1,11 +1,12 @@
 /**
  * documentChecker.ts
- * Проверяет текст документа по набору правил PolicyRule.
  *
- * FIX: после получения ответа от Gemini все позиции (start/end) верифицируются
- *      через text.indexOf(matchedText) — если AI вернул неверный офсет,
- *      он корректируется по фактическому вхождению строки в исходный текст.
- *      Нарушения без верифицируемого matchedText отбрасываются.
+ * Проверяет текст документа по набору правил PolicyRule.
+ * Дополнительно проверяет грамматику, орфографию, синтаксис и стиль,
+ * опираясь на авторитетные онлайн-ресурсы и словари.
+ *
+ * Длинные документы обрабатываются чанками по ~12 000 символов.
+ * Позиции нарушений верифицируются через indexOf.
  */
 
 import { callGemini } from "./geminiRouter.js";
@@ -15,76 +16,157 @@ import type {
 
 const LOG = "[doc-checker]";
 
-const SYSTEM_INSTRUCTION = `Ты — редактор. Проверь текст документа по списку правил редакционной политики.
+const CHUNK_SIZE    = 12000;
+const CHUNK_OVERLAP = 600;
 
+// ── Справочные ресурсы для проверки ──────────────────────────────────────────
+const REFERENCE_RESOURCES = `
+При проверке грамматики, орфографии, синтаксиса и стиля опирайся на следующие
+авторитетные ресурсы (не открывай URL — используй свои знания об их нормах):
+
+## Русский язык
+- Грамотa.ру (gramota.ru) — орфография, пунктуация, справочник
+- Академический орфографический словарь РАН (oross.ruslang.ru)
+- Мегаэнциклопедия Кирилла и Мефодия (megabook.ru)
+- НКРЯ — Национальный корпус русского языка (ruscorpora.ru)
+- Справочник Розенталя по русскому языку
+- ЛексисРус (lexiconrus) — стилистика
+- Словарь Ушакова и Ожегова — значение слов
+- Орфоэпический словарь РАН — произношение и ударения
+
+## Английский язык
+- Merriam-Webster (merriam-webster.com)
+- Oxford English Dictionary (oed.com)
+- Cambridge Dictionary (dictionary.cambridge.org)
+- Grammarly style guide
+- Chicago Manual of Style
+- AP Stylebook
+
+## Немецкий язык
+- Duden (duden.de) — орфография и грамматика
+- DWDS (dwds.de) — цифровой словарь немецкого языка
+
+## Французский язык
+- Académie française (academie-francaise.fr)
+- Le Robert (larousse.fr)
+
+## Общие
+- Readability: Flesch-Kincaid, Gunning Fog
+- APA Style (apastyle.apa.org)
+- ISO 690 — библиографические ссылки
+`;
+
+const BASE_SYSTEM = `Ты — профессиональный редактор и лингвист. Проверь текст документа по двум направлениям:
+
+## 1. Правила редакционной политики
+Проверь каждое правило из списка. Найди все нарушения в тексте.
+
+## 2. Грамматика, орфография, синтаксис, стиль
+Дополнительно к правилам политики проверь:
+- Орфографические ошибки (опечатки, неправильное написание слов)
+- Пунктуационные ошибки (запятые, тире, кавычки)
+- Грамматические ошибки (согласование, падежи, склонения)
+- Синтаксические ошибки (структура предложений, порядок слов)
+- Стилистические ошибки (канцеляризмы, тавтология, плеоназмы, штампы)
+- Типографические ошибки (двойные пробелы, неверные кавычки, дефис вместо тире)
+
+${REFERENCE_RESOURCES}
+
+## Формат ответа
 ВАЖНО:
-- Поля "start" и "end" — это БАЙТОВЫЕ (символьные) смещения в проверяемом тексте,
-  считая с 0. text.substring(start, end) должно точно совпадать с "matchedText".
-- "matchedText" должен быть ТОЧНОЙ подстрокой из исходного текста (регистр, пробелы).
-- Не включай нарушения, если не можешь точно указать позицию.
+- Поля "start" и "end" — символьные смещения в тексте с 0.
+  text.substring(start, end) должно точно совпадать с "matchedText".
+- "matchedText" — ТОЧНАЯ подстрока из исходного текста (регистр, пробелы).
+- Не включай нарушения без точной позиции.
+- Для грамматических/орфографических нарушений используй category: "style" или "typography",
+  ruleId: "grammar", "spelling", "punctuation", "syntax" соответственно.
 
 Верни строго JSON без markdown-блоков:
 {
   "violations": [
     {
       "id": "v-1",
-      "ruleId": "rule-X",
-      "category": "...",
-      "severity": "error" | "warning" | "info",
+      "ruleId": "<id правила политики или: grammar | spelling | punctuation | syntax | style-lint>",
+      "category": "stop-word | style | tone | structure | typography | abbreviation | factual | custom",
+      "severity": "error | warning | info",
       "start": <int>,
       "end": <int>,
-      "matchedText": "...",
-      "suggestion": "предлагаемая замена (опционально)",
-      "explanation": "почему это нарушение (1-2 предложения)",
+      "matchedText": "<точная подстрока из текста>",
+      "suggestion": "<предлагаемая замена>",
+      "explanation": "<почему нарушение, 1-2 предложения; для grammar/spelling — ссылка на норму>",
       "confidence": 0.0-1.0
     }
   ],
-  "summary": "...",
-  "detectedLanguage": "ru" | "en" | "mixed"
+  "summary": "<общий вывод о качестве текста>",
+  "detectedLanguage": "ru" | "en" | "de" | "fr" | "mixed"
 }
 Если нарушений нет — violations: [].`;
 
-/**
- * Верифицирует и корректирует позиции нарушения:
- * 1. Проверяет text.substring(start, end) === matchedText
- * 2. Если нет — ищет matchedText через indexOf начиная с max(0, start-200)
- * 3. Если не найдено — возвращает null (нарушение отбрасывается)
- */
 function resolvePosition(
   text: string,
   v: PolicyViolation,
+  offset: number,
 ): PolicyViolation | null {
   const matched = v.matchedText;
   if (!matched || matched.length === 0) return null;
 
-  // Case 1: позиция верная
+  // Корректируем позицию с учётом смещения чанка
+  const adjStart = (v.start ?? 0) + offset;
+  const adjEnd   = (v.end   ?? 0) + offset;
+
+  // Точное совпадение
   if (
-    typeof v.start === "number" &&
-    typeof v.end === "number" &&
-    v.start >= 0 &&
-    v.end <= text.length &&
-    v.end - v.start === matched.length &&
-    text.substring(v.start, v.end) === matched
+    adjStart >= 0 &&
+    adjEnd <= text.length &&
+    adjEnd - adjStart === matched.length &&
+    text.substring(adjStart, adjEnd) === matched
   ) {
-    return v;
+    return { ...v, start: adjStart, end: adjEnd };
   }
 
-  // Case 2: поиск в окрестности заявленной позиции (±500 символов)
-  const searchFrom = Math.max(0, (v.start ?? 0) - 500);
+  // Поиск в окрестности (±600)
+  const searchFrom = Math.max(0, adjStart - 600);
   const idx = text.indexOf(matched, searchFrom);
-  if (idx !== -1) {
-    return { ...v, start: idx, end: idx + matched.length };
-  }
+  if (idx !== -1) return { ...v, start: idx, end: idx + matched.length };
 
-  // Case 3: поиск по всему тексту (fallback)
+  // Полный поиск (fallback)
   const idxFull = text.indexOf(matched);
-  if (idxFull !== -1) {
-    return { ...v, start: idxFull, end: idxFull + matched.length };
+  if (idxFull !== -1) return { ...v, start: idxFull, end: idxFull + matched.length };
+
+  console.warn(`${LOG} drop v id=${v.id}: matchedText not found`);
+  return null;
+}
+
+function splitIntoChunks(text: string): { text: string; offset: number }[] {
+  if (text.length <= CHUNK_SIZE) return [{ text, offset: 0 }];
+
+  const chunks: { text: string; offset: number }[] = [];
+  let pos = 0;
+
+  while (pos < text.length) {
+    let end = pos + CHUNK_SIZE;
+    if (end >= text.length) {
+      chunks.push({ text: text.slice(pos), offset: pos });
+      break;
+    }
+    const boundary = text.lastIndexOf("\n\n", end);
+    if (boundary > pos + CHUNK_SIZE / 2) end = boundary + 2;
+    chunks.push({ text: text.slice(pos, end), offset: pos });
+    pos = Math.max(pos + 1, end - CHUNK_OVERLAP);
   }
 
-  // Не найдено — отбрасываем
-  console.warn(`${LOG} drop violation id=${v.id}: matchedText not found in document`);
-  return null;
+  return chunks;
+}
+
+/** Убирает дубликаты нарушений (одинаковый matchedText + ruleId из перекрытий чанков) */
+function deduplicateViolations(violations: PolicyViolation[]): PolicyViolation[] {
+  const seen = new Set<string>();
+  return violations.filter((v) => {
+    const key = `${v.ruleId}::${v.matchedText}::${v.start}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function checkDocument(
@@ -92,82 +174,87 @@ export async function checkDocument(
   rules: PolicyRule[],
 ): Promise<CheckDocumentResponse> {
   const apiKey = process.env.GEMINI_API_KEY!;
-
-  console.info(`${LOG} starting check: ${rules.length} rules, doc ${req.documentText.length} chars`);
+  console.info(`${LOG} check: ${rules.length} rules, doc ${req.documentText.length} chars`);
 
   const rulesText = rules
     .map((r, i) => `${i + 1}. [${r.id}] (${r.category}, ${r.severity}) ${r.name}: ${r.description}`)
     .join("\n");
 
-  const docSlice = req.documentText.slice(0, 15000);
+  const chunks = splitIntoChunks(req.documentText);
+  console.info(`${LOG} split into ${chunks.length} chunk(s)`);
 
-  const userText =
-    `${SYSTEM_INSTRUCTION}\n\n` +
-    `Правила редакционной политики:\n${rulesText}\n\n` +
-    `Проверяемый текст (язык: ${req.language ?? "auto"}, начало с символа 0):\n` +
-    `<<<TEXT_START>>>\n${docSlice}\n<<<TEXT_END>>>`;
+  const allViolations: PolicyViolation[] = [];
+  let finalSummary   = "";
+  let detectedLang: string | undefined;
+  let labelUsed      = "";
 
-  const contents = [
-    { role: "user", parts: [{ text: userText }] },
-  ];
-  const generationConfig = {
-    temperature:      0.1,
-    responseMimeType: "application/json",
-  };
+  for (let i = 0; i < chunks.length; i++) {
+    const { text: chunkText, offset } = chunks[i];
+    const chunkNote = chunks.length > 1
+      ? `\n\n[ФРАГМЕНТ ${i + 1}/${chunks.length}, смещение начала: ${offset} символов]`
+      : "";
 
-  try {
-    const result = await callGemini(contents, generationConfig, apiKey);
+    const userText =
+      `${BASE_SYSTEM}\n\n` +
+      `Правила редакционной политики:\n${rulesText}\n\n` +
+      `Проверяемый текст (язык: ${req.language ?? "auto"}${chunkNote}, позиции считаются от 0 внутри этого фрагмента):\n` +
+      `<<<TEXT_START>>>\n${chunkText}\n<<<TEXT_END>>>`;
 
-    console.info(`${LOG} raw response from ${result.model} (${result.raw.length} chars):`);
-    console.info(`${LOG} --- RAW START ---`);
-    console.info(result.raw.slice(0, 3000));
-    if (result.raw.length > 3000)
-      console.info(`${LOG} ... [truncated, total ${result.raw.length} chars]`);
-    console.info(`${LOG} --- RAW END ---`);
+    console.info(`${LOG} chunk ${i + 1}/${chunks.length} offset=${offset} len=${chunkText.length}`);
 
-    let parsed: { violations: PolicyViolation[]; summary?: string; detectedLanguage?: "ru" | "en" | "mixed" };
     try {
-      parsed = JSON.parse(result.raw) as typeof parsed;
-    } catch (jsonErr) {
-      console.error(`${LOG} JSON.parse FAILED:`, jsonErr instanceof Error ? jsonErr.message : jsonErr);
-      console.error(`${LOG} first 500 chars of raw: ${result.raw.slice(0, 500)}`);
-      throw new Error(
-        `JSON parse error: ${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}. ` +
-        `Raw (first 200): ${result.raw.slice(0, 200)}`
+      const result = await callGemini(
+        [{ role: "user", parts: [{ text: userText }] }],
+        { temperature: 0.1, responseMimeType: "application/json" },
+        apiKey,
       );
-    }
 
-    const raw = (parsed.violations ?? []).map((v, i) => ({ ...v, source: "ai" as const, id: v.id ?? `v-${i}` }));
+      labelUsed = result.label;
+      console.info(`${LOG} chunk ${i + 1} raw (${result.raw.length} chars)`);
 
-    // ── Верификация позиций ─────────────────────────────────────────────────
-    const verified: PolicyViolation[] = [];
-    let corrected = 0;
-    let dropped = 0;
-    for (const v of raw) {
-      const fixed = resolvePosition(req.documentText, v);
-      if (fixed) {
-        if (fixed.start !== v.start || fixed.end !== v.end) corrected++;
-        verified.push(fixed);
-      } else {
-        dropped++;
+      const parsed = JSON.parse(result.raw) as {
+        violations: PolicyViolation[];
+        summary?: string;
+        detectedLanguage?: string;
+      };
+
+      const raw = (parsed.violations ?? []).map((v, j) => ({
+        ...v,
+        source: "ai" as const,
+        id: v.id ?? `v-${i}-${j}`,
+      }));
+
+      // Верифицируем позиции (с учётом offset чанка)
+      let corrected = 0; let dropped = 0;
+      for (const v of raw) {
+        const fixed = resolvePosition(req.documentText, v, offset);
+        if (fixed) {
+          if (fixed.start !== (v.start ?? 0) + offset) corrected++;
+          allViolations.push(fixed);
+        } else {
+          dropped++;
+        }
       }
-    }
-    console.info(`${LOG} position verify: ${verified.length} OK, ${corrected} corrected, ${dropped} dropped`);
+      console.info(`${LOG} chunk ${i + 1}: ${raw.length} raw, ${corrected} corrected, ${dropped} dropped`);
 
-    return {
-      violations:       verified,
-      summary:          parsed.summary,
-      detectedLanguage: parsed.detectedLanguage,
-      checkedAt:        new Date().toISOString(),
-      model:            result.label,
-      _label:           result.label,
-    } as CheckDocumentResponse;
-  } catch (err) {
-    console.error(`${LOG} checkDocument ERROR:`, err instanceof Error ? err.message : err);
-    return {
-      violations: [],
-      checkedAt:  new Date().toISOString(),
-      error:      err instanceof Error ? err.message : String(err),
-    } as CheckDocumentResponse;
+      if (i === 0) {
+        finalSummary = parsed.summary ?? "";
+        detectedLang = parsed.detectedLanguage;
+      }
+    } catch (err) {
+      console.error(`${LOG} chunk ${i + 1} ERROR:`, err instanceof Error ? err.message : err);
+    }
   }
+
+  const deduped = deduplicateViolations(allViolations);
+  console.info(`${LOG} total violations: ${allViolations.length} → after dedup: ${deduped.length}`);
+
+  return {
+    violations:       deduped,
+    summary:          finalSummary,
+    detectedLanguage: detectedLang as "ru" | "en" | "mixed" | undefined,
+    checkedAt:        new Date().toISOString(),
+    model:            labelUsed,
+    _label:           labelUsed,
+  } as CheckDocumentResponse;
 }
