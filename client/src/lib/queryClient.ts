@@ -1,14 +1,10 @@
-import { QueryClient } from "@tanstack/react-query";
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
-export const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
-});
-
-export async function apiRequest(method: string, url: string, body?: unknown): Promise<Response> {
-  const res = await fetch(url, {
+export async function apiRequest(method: Method, url: string, body?: unknown): Promise<Response> {
+  const options: RequestInit = {
     method,
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  return res;
+    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  };
+  return fetch(url, options);
 }
