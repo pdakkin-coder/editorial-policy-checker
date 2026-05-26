@@ -38,6 +38,13 @@ const CATEGORY_LABELS: Record<string, string> = {
   custom:       "Правило политики",
 };
 
+const SEV_LABELS: Record<string, string> = {
+  all:     "Все уровни",
+  error:   "Ошибки",
+  warning: "Предупреждения",
+  info:    "Инфо",
+};
+
 const SEVERITY_ICON = {
   error:   <AlertTriangle className="h-3.5 w-3.5 text-destructive shrink-0" />,
   warning: <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />,
@@ -67,6 +74,55 @@ const PROSE_CLASS = [
 function annClass(v: PolicyViolation): string { return `ann-${v.category}`; }
 function legendDotClass(v: PolicyViolation): string {
   return `legend-dot legend-dot-${v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info"}`;
+}
+
+// ── Normalize DOM text to match server plain-text offsets ────────────────────
+// The server calls htmlToPlainText() which converts block-level tags to \n
+// then strips all tags. Browser innerText produces the same text but with
+// \n chars at block boundaries. We must count those \n as single characters
+// the same way the server does, so offsets stay in sync.
+//
+// Strategy: collect text nodes; for each block-level element boundary (p, h1-6,
+// li, br) inject a synthetic \n text node so cumulative offset math matches
+// the server's htmlToPlainText output.
+function collectTextNodes(
+  container: HTMLElement,
+): { node: Text; start: number; end: number }[] {
+  const BLOCK_TAGS = new Set(["P","H1","H2","H3","H4","H5","H6","LI","DIV","BR","TR"]);
+  const result: { node: Text; start: number; end: number }[] = [];
+  let offset = 0;
+
+  function walk(node: Node, isFirst: boolean) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = node as Text;
+      const len = t.textContent?.length ?? 0;
+      if (len > 0) {
+        result.push({ node: t, start: offset, end: offset + len });
+        offset += len;
+      }
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as HTMLElement;
+    const tag = el.tagName;
+
+    // Inject \n offset before each block element (except the very first)
+    // to mirror htmlToPlainText which appends \n on </p>, </h*>, </li>
+    if (!isFirst && BLOCK_TAGS.has(tag)) {
+      offset += 1; // represents the \n
+    }
+
+    const children = Array.from(el.childNodes);
+    children.forEach((child, i) => walk(child, isFirst && i === 0));
+
+    // After block element add trailing \n (mirrors </p> => \n)
+    if (BLOCK_TAGS.has(tag)) {
+      offset += 1;
+    }
+  }
+
+  walk(container, true);
+  return result;
 }
 
 // ── Inline export menu ────────────────────────────────────────────────────────
@@ -131,10 +187,6 @@ function useDragResize(initial: number, min: number, max: number, dir: "left" | 
 }
 
 // ── Annotated HTML view ───────────────────────────────────────────────────────
-// Violations carry offsets computed on the plain-text (innerText) of the document.
-// We build the annotation layer AFTER the HTML renders by walking text nodes
-// of the live DOM — so offsets are always in sync with what the user sees,
-// not with the raw HTML string that may contain extra tag characters.
 function AnnotatedHtmlView({
   html,
   violations,
@@ -154,13 +206,13 @@ function AnnotatedHtmlView({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Phase 1 — inject <mark> elements whenever html or violations change.
-  // Must run as useEffect (after paint) so containerRef.current is populated.
+  // Phase 1: inject <mark> elements after HTML renders.
+  // Uses collectTextNodes() which mirrors server htmlToPlainText offset logic.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    // Strip any previous marks without clobbering innerHTML
+    // Strip previous marks
     container.querySelectorAll("mark[data-vid]").forEach((el) => {
       const parent = el.parentNode;
       if (!parent) return;
@@ -171,32 +223,19 @@ function AnnotatedHtmlView({
 
     if (!violations.length) return;
 
-    // Walk text nodes and record their cumulative plain-text offsets.
-    // This mirrors exactly how heuristicChecker and the AI backend measure offsets
-    // (both operate on plain text, not HTML).
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-    const nodes: { node: Text; start: number; end: number }[] = [];
-    let offset = 0;
-    let node: Node | null;
-    while ((node = walker.nextNode())) {
-      const t = node as Text;
-      const len = t.textContent?.length ?? 0;
-      nodes.push({ node: t, start: offset, end: offset + len });
-      offset += len;
-    }
+    // Collect text nodes with offsets that match server plain-text offsets
+    const nodes = collectTextNodes(container);
+    const totalLen = nodes.length > 0 ? nodes[nodes.length - 1].end : 0;
 
-    const totalLen = offset;
-
-    // Process in reverse order (high start first) so earlier offsets stay valid
+    // Process high-start first so earlier offsets stay valid
     const sorted = [...violations]
-      .filter(v => v.start >= 0 && v.end > v.start && v.end <= totalLen)
+      .filter(v => v.start >= 0 && v.end > v.start && v.end <= totalLen + 10)
       .sort((a, b) => b.start - a.start);
 
     for (const v of sorted) {
       const overlapping = nodes.filter(n => n.end > v.start && n.start < v.end);
       if (!overlapping.length) continue;
 
-      // Single text-node path (the common case — inline violations)
       if (overlapping.length === 1) {
         const { node: textNode, start: nodeStart } = overlapping[0];
         const localStart = v.start - nodeStart;
@@ -217,19 +256,14 @@ function AnnotatedHtmlView({
         parent.insertBefore(after, textNode);
         parent.removeChild(textNode);
 
-        // Update tracked node to the "after" fragment so subsequent iterations
-        // keep correct cumulative offsets for this slot in the array
         overlapping[0].node  = after as unknown as Text;
         overlapping[0].start = nodeStart + localEnd;
       }
-      // Multi-node: mark only the first node for now (cross-element violations are rare)
     }
-  // Re-run only when html or violation identity changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [html, violations]);
 
-  // Phase 2 — update classes and event handlers on existing <mark> elements.
-  // Runs on every hover/selection change without touching the DOM structure.
+  // Phase 2: update classes/handlers on existing marks
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -245,7 +279,6 @@ function AnnotatedHtmlView({
       ].filter(Boolean).join(" ");
 
       spanRefs.current.set(vid, el as HTMLSpanElement);
-
       el.onmouseenter = () => onHover(vid);
       el.onmouseleave = () => onHover(null);
       el.onclick      = () => onSelect(v);
@@ -657,26 +690,40 @@ export default function Workbench() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-2">
                     <h2 className="text-sm font-semibold">Нарушения</h2>
-                    <Badge variant="outline" className="text-[10px] shrink-0">{violations.length}</Badge>
+                    <Badge variant="outline" className="text-[10px] shrink-0">{filteredViolations.length}/{violations.length}</Badge>
                   </div>
+
+                  {/* Filters */}
                   <div className="flex flex-col gap-1.5">
                     <Select value={catFilter} onValueChange={setCatFilter}>
-                      <SelectTrigger className="h-7 w-full text-xs"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="h-7 w-full text-xs">
+                        <SelectValue>
+                          {catFilter === "all" ? "Все категории" : (CATEGORY_LABELS[catFilter] ?? catFilter)}
+                        </SelectValue>
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all" className="text-xs">Все категории</SelectItem>
-                        {Object.entries(CATEGORY_LABELS).map(([k, v]) => <SelectItem key={k} value={k} className="text-xs">{v}</SelectItem>)}
+                        {Object.entries(CATEGORY_LABELS).map(([k, v]) => (
+                          <SelectItem key={k} value={k} className="text-xs">{v}</SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
+
                     <Select value={sevFilter} onValueChange={setSevFilter}>
-                      <SelectTrigger className="h-7 w-full text-xs"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="h-7 w-full text-xs">
+                        <SelectValue>
+                          {SEV_LABELS[sevFilter] ?? sevFilter}
+                        </SelectValue>
+                      </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all" className="text-xs">Все</SelectItem>
-                        <SelectItem value="error" className="text-xs">Ошибки</SelectItem>
+                        <SelectItem value="all"     className="text-xs">Все уровни</SelectItem>
+                        <SelectItem value="error"   className="text-xs">Ошибки</SelectItem>
                         <SelectItem value="warning" className="text-xs">Предупреждения</SelectItem>
-                        <SelectItem value="info" className="text-xs">Инфо</SelectItem>
+                        <SelectItem value="info"    className="text-xs">Инфо</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
+
                   {filteredViolations.length === 0 ? (
                     <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
                       <CheckCircle2 className="h-8 w-8 opacity-30" />
@@ -696,7 +743,7 @@ export default function Workbench() {
                             <div className="flex items-center gap-1.5 mb-1 min-w-0">
                               <span className={legendDotClass(v)} />
                               {SEVERITY_ICON[v.severity]}
-                              <span className="font-medium truncate">{CATEGORY_LABELS[v.category]}</span>
+                              <span className="font-medium truncate">{CATEGORY_LABELS[v.category] ?? v.category}</span>
                               {v.source === "heuristic" && (
                                 <Badge variant="outline" className="text-[9px] px-1 h-3.5 shrink-0 ml-auto">эвристика</Badge>
                               )}
