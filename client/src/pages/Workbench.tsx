@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText, Upload, Link2, Sun, Moon, Sparkles, BookOpen,
   AlertTriangle, CheckCircle2, Info, ChevronRight, Cpu, FileDown,
@@ -44,7 +44,6 @@ const SEVERITY_ICON = {
   info:    <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />,
 };
 
-// Prose CSS classes applied to the HTML view container
 const PROSE_CLASS = [
   "prose prose-sm dark:prose-invert max-w-none",
   "[&_h1]:text-2xl [&_h1]:font-bold [&_h1]:mb-3 [&_h1]:mt-6 [&_h1]:leading-tight",
@@ -70,12 +69,12 @@ function legendDotClass(v: PolicyViolation): string {
   return `legend-dot legend-dot-${v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info"}`;
 }
 
-// ── Inline export menu (no dropdown-menu dep) ──────────────────────────────
+// ── Inline export menu ────────────────────────────────────────────────────────
 function ExportMenu({ onExport, disabled }: { onExport: (f: "docx" | "html" | "txt") => void; disabled: boolean }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
-  useMemo(() => {
+  useEffect(() => {
     function handler(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
@@ -116,7 +115,7 @@ function useDragResize(initial: number, min: number, max: number, dir: "left" | 
     e.preventDefault(); drag.current = true; sx.current = e.clientX; sw.current = width;
     document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
   }, [width]);
-  useMemo(() => {
+  useEffect(() => {
     function mv(e: MouseEvent) {
       if (!drag.current) return;
       const d = dir === "right" ? e.clientX - sx.current : sx.current - e.clientX;
@@ -132,8 +131,10 @@ function useDragResize(initial: number, min: number, max: number, dir: "left" | 
 }
 
 // ── Annotated HTML view ───────────────────────────────────────────────────────
-// When violations exist we inject <mark> spans into the HTML via DOM manipulation
-// rather than slicing plain text, so heading/paragraph structure is preserved.
+// Violations carry offsets computed on the plain-text (innerText) of the document.
+// We build the annotation layer AFTER the HTML renders by walking text nodes
+// of the live DOM — so offsets are always in sync with what the user sees,
+// not with the raw HTML string that may contain extra tag characters.
 function AnnotatedHtmlView({
   html,
   violations,
@@ -151,25 +152,28 @@ function AnnotatedHtmlView({
   onSelect:   (v: PolicyViolation) => void;
   spanRefs:   React.MutableRefObject<Map<string, HTMLSpanElement>>;
 }) {
-  // Build annotated HTML by injecting <mark data-vid="..."> into the plain-text
-  // offsets. We work on the innerText representation mapped back to HTML.
-  // Simplest reliable approach: render HTML, collect text nodes, apply spans.
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Re-annotate whenever violations/html change
-  useMemo(() => {
+  // Phase 1 — inject <mark> elements whenever html or violations change.
+  // Must run as useEffect (after paint) so containerRef.current is populated.
+  useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    // Remove any previous marks without resetting innerHTML
+
+    // Strip any previous marks without clobbering innerHTML
     container.querySelectorAll("mark[data-vid]").forEach((el) => {
       const parent = el.parentNode;
       if (!parent) return;
       while (el.firstChild) parent.insertBefore(el.firstChild, el);
       parent.removeChild(el);
     });
+    spanRefs.current.clear();
+
     if (!violations.length) return;
 
-    // Collect all text nodes in document order and their cumulative offsets
+    // Walk text nodes and record their cumulative plain-text offsets.
+    // This mirrors exactly how heuristicChecker and the AI backend measure offsets
+    // (both operate on plain text, not HTML).
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     const nodes: { node: Text; start: number; end: number }[] = [];
     let offset = 0;
@@ -181,30 +185,31 @@ function AnnotatedHtmlView({
       offset += len;
     }
 
-    // Sort violations by start desc so later insertions don't shift offsets
+    const totalLen = offset;
+
+    // Process in reverse order (high start first) so earlier offsets stay valid
     const sorted = [...violations]
-      .filter(v => v.start >= 0 && v.end > v.start && v.end <= offset)
+      .filter(v => v.start >= 0 && v.end > v.start && v.end <= totalLen)
       .sort((a, b) => b.start - a.start);
 
     for (const v of sorted) {
-      // Find nodes that overlap [v.start, v.end)
       const overlapping = nodes.filter(n => n.end > v.start && n.start < v.end);
       if (!overlapping.length) continue;
 
-      // For simplicity handle single-node case (most violations are inline)
+      // Single text-node path (the common case — inline violations)
       if (overlapping.length === 1) {
         const { node: textNode, start: nodeStart } = overlapping[0];
         const localStart = v.start - nodeStart;
         const localEnd   = v.end   - nodeStart;
         const text = textNode.textContent ?? "";
-        if (localStart < 0 || localEnd > text.length) continue;
+        if (localStart < 0 || localEnd > text.length || localStart >= localEnd) continue;
 
         const before = document.createTextNode(text.slice(0, localStart));
         const mark   = document.createElement("mark");
         mark.dataset.vid = v.id;
         mark.textContent = text.slice(localStart, localEnd);
+        const after = document.createTextNode(text.slice(localEnd));
 
-        const after  = document.createTextNode(text.slice(localEnd));
         const parent = textNode.parentNode;
         if (!parent) continue;
         parent.insertBefore(before, textNode);
@@ -212,16 +217,20 @@ function AnnotatedHtmlView({
         parent.insertBefore(after, textNode);
         parent.removeChild(textNode);
 
-        // Update node list offsets so subsequent iterations still work
-        overlapping[0].node = after as unknown as Text;
+        // Update tracked node to the "after" fragment so subsequent iterations
+        // keep correct cumulative offsets for this slot in the array
+        overlapping[0].node  = after as unknown as Text;
         overlapping[0].start = nodeStart + localEnd;
       }
+      // Multi-node: mark only the first node for now (cross-element violations are rare)
     }
+  // Re-run only when html or violation identity changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [html, violations]);
 
-  // Attach event handlers to marks after render
-  useMemo(() => {
+  // Phase 2 — update classes and event handlers on existing <mark> elements.
+  // Runs on every hover/selection change without touching the DOM structure.
+  useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     container.querySelectorAll<HTMLElement>("mark[data-vid]").forEach((el) => {
@@ -229,14 +238,12 @@ function AnnotatedHtmlView({
       const v   = violations.find(x => x.id === vid);
       if (!v) return;
 
-      // Apply CSS classes
       el.className = [
         annClass(v),
         hoveredId === vid ? "ann-focused" : "",
         (selected?.start === v.start && selected?.end === v.end) ? "ann-selected" : "",
       ].filter(Boolean).join(" ");
 
-      // Register in spanRefs
       spanRefs.current.set(vid, el as HTMLSpanElement);
 
       el.onmouseenter = () => onHover(vid);

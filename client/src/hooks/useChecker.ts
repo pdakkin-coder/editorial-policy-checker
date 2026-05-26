@@ -5,7 +5,8 @@
  * Flow:
  *   1. heuristicCheck() → immediate violations
  *   2. POST /api/check  → AI violations (positions already verified server-side)
- *   3. merge: AI overrides heuristic for same span; dedup by (start,end,matchedText)
+ *   3. merge: AI overrides heuristic for same span; dedup by (start,end) ONLY
+ *      — same matchedText at different positions is NOT a duplicate.
  */
 
 import { useState, useCallback } from "react";
@@ -94,23 +95,15 @@ function mergeViolations(
 
   const combined = [...filteredH, ...validA].sort((a, b) => a.start - b.start);
 
-  // ── Дедупликация: убираем дубли с одинаковым (start, end) или
-  //    с одинаковым matchedText.toLowerCase() + перекрывающимся спаном ──────
-  const seen = new Map<string, true>();
+  // Дедупликация ТОЛЬКО по точным позициям (start:end).
+  // Одинаковый matchedText на разных позициях — это разные нарушения, не дубли.
+  const seenPos = new Set<string>();
   const deduped: PolicyViolation[] = [];
 
   for (const v of combined) {
-    // Ключ 1: точное совпадение позиций
     const posKey = `${v.start}:${v.end}`;
-    if (seen.has(posKey)) continue;
-
-    // Ключ 2: одинаковый нормализованный текст + та же категория
-    // (ловит случай когда AI вернул несколько раз одно слово с разными id)
-    const textKey = `${v.category}:${v.matchedText.trim().toLowerCase()}`;
-    if (seen.has(textKey)) continue;
-
-    seen.set(posKey, true);
-    seen.set(textKey, true);
+    if (seenPos.has(posKey)) continue;
+    seenPos.add(posKey);
     deduped.push(v);
   }
 
