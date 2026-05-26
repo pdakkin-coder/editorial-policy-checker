@@ -8,45 +8,40 @@ import type { ParsePolicyRequest, ParsePolicyResponse, PolicyRule } from "../sha
 const LOG = "[policy-parser]";
 
 function buildPrompt(name: string, text: string): string {
-  return `\
-Ty opytnyy redaktor i lingvist. Tvoya zadacha — izvlechʹ VSE pravila iz dokumenta redaktsionnoy politiki.
-
-NAZVANIE DOKUMENTA: ${name}
-
-POLNYY TEKST DOKUMENTA:
-===BEGIN===
-${text}
-===END===
-
-Zadacha: proanaliziruy kazhdyy razdel dokumenta i izvleki iz nego redaktsionnye pravila.
-Pravilo — eto lyuboe trebovaniye k tekstam: zapreshchonnye slova, stilistika, ton, tipografika,
-struktura materiala, trebovaniya k zagolovkam, abzatsam, ssylkam, izobrazeniyam, tsitirovanniyu i t.d.
-
-VERNI TOLʹKO JSON (bez ```markdown blokov, bez obʹyasneniy do ili posle).
-Format otveta:
-{
-  "rules": [
-    {
-      "id": "rule-1",
-      "category": "<odno iz: stop-word | style | tone | structure | typography | abbreviation | factual | custom>",
-      "name": "<kratkoe nazvanie pravila>",
-      "description": "<podrobnoe opisanie 2-4 predlozeniya>",
-      "severity": "<odno iz: error | warning | info>",
-      "examples": [
-        { "bad": "<primer narusheniya>", "good": "<pravilnyy variant>" }
-      ],
-      "source": "<ssylka na razdel dokumenta ili pustaya stroka>"
-    }
-  ],
-  "summary": "<2-3 predlozeniya: o chom eta politika i dlya kakikh tekstov>"
-}
-
-VAZHNO:
-1. Otvet DOLZHEN nachinatsya s { i zakanchivatsya na } — nichego lishnego
-2. Ignoriruй lyubye PDF-metadannye (format, version, page_count, producer i t.p.)
-3. Esli v razdele net yavnykh pravil — sformuliruй ikh iz smysla teksta
-4. Izvleki minimum 5 pravil esli dokument soderzhit khoby redaktsionnye trebovaniya
-`;
+  return (
+    "Ty opytnyy redaktor i lingvist. Tvoya zadacha — izvlechʹ VSE pravila iz dokumenta redaktsionnoy politiki.\n\n" +
+    "NAZVANIE DOKUMENTA: " + name + "\n\n" +
+    "POLNYY TEKST DOKUMENTA:\n" +
+    "===BEGIN===\n" +
+    text + "\n" +
+    "===END===\n\n" +
+    "Zadacha: proanaliziruy kazhdyy razdel dokumenta i izvleki iz nego redaktsionnye pravila.\n" +
+    "Pravilo — eto lyuboe trebovaniye k tekstam: zapreshchonnye slova, stilistika, ton, tipografika,\n" +
+    "struktura materiala, trebovaniya k zagolovkam, abzatsam, ssylkam, izobrazeniyam, tsitirovanniyu i t.d.\n\n" +
+    "VERNI TOLʹKO JSON (bez code-blokov, bez obʹyasneniy do ili posle).\n" +
+    "Format otveta:\n" +
+    "{\n" +
+    "  \"rules\": [\n" +
+    "    {\n" +
+    "      \"id\": \"rule-1\",\n" +
+    "      \"category\": \"<odno iz: stop-word | style | tone | structure | typography | abbreviation | factual | custom>\",\n" +
+    "      \"name\": \"<kratkoe nazvanie pravila>\",\n" +
+    "      \"description\": \"<podrobnoe opisanie 2-4 predlozeniya>\",\n" +
+    "      \"severity\": \"<odno iz: error | warning | info>\",\n" +
+    "      \"examples\": [\n" +
+    "        { \"bad\": \"<primer narusheniya>\", \"good\": \"<pravilnyy variant>\" }\n" +
+    "      ],\n" +
+    "      \"source\": \"<ssylka na razdel dokumenta ili pustaya stroka>\"\n" +
+    "    }\n" +
+    "  ],\n" +
+    "  \"summary\": \"<2-3 predlozeniya: o chom eta politika i dlya kakikh tekstov>\"\n" +
+    "}\n\n" +
+    "VAZNO:\n" +
+    "1. Otvet DOLZHEN nachinatsya s { i zakanchivatsya na } — nichego lishnego\n" +
+    "2. Ignoriruй lyubye PDF-metadannye (format, version, page_count, producer i t.p.)\n" +
+    "3. Esli v razdele net yavnykh pravil — sformuliruй ikh iz smysla teksta\n" +
+    "4. Izvleki minimum 5 pravil esli dokument soderzhit khoby redaktsionnye trebovaniya\n"
+  );
 }
 
 function extractJson(raw: string): string {
@@ -62,7 +57,6 @@ export async function parsePolicy(
 ): Promise<ParsePolicyResponse> {
   const apiKey = process.env.GEMINI_API_KEY!;
 
-  // Отправляем полный текст без обрезки
   const docText = req.rawText;
   console.info(`${LOG} starting parse «${req.name}» (${docText.length} chars)`);
 
