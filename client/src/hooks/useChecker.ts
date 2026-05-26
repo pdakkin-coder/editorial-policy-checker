@@ -1,12 +1,6 @@
 /**
  * useChecker.ts
  * React hook: orchestrates heuristic + AI check pipeline.
- *
- * Flow:
- *   1. heuristicCheck() → immediate violations
- *   2. POST /api/check  → AI violations (positions already verified server-side)
- *   3. merge: AI overrides heuristic for same span; dedup by (start,end) ONLY
- *      — same matchedText at different positions is NOT a duplicate.
  */
 
 import { useState, useCallback } from "react";
@@ -30,11 +24,9 @@ export function useChecker() {
   const check = useCallback(async (documentText: string, policyId: string) => {
     setState((s) => ({ ...s, loading: true, error: null }));
 
-    // Step 1: immediate heuristic results
     const heuristic = heuristicCheck(documentText);
     setState((s) => ({ ...s, violations: heuristic }));
 
-    // Step 2: AI check
     try {
       const res  = await apiRequest("POST", "/api/check", { documentText, policyId });
       const data = await res.json() as CheckResult & { error?: string; _label?: string };
@@ -66,7 +58,12 @@ export function useChecker() {
     setState({ violations: [], loading: false, error: null, result: null, activeModel: null });
   }, []);
 
-  return { ...state, check, reset };
+  /** Directly overwrite violations (e.g. restore from localStorage on mount). */
+  const setViolations = useCallback((violations: PolicyViolation[]) => {
+    setState((s) => ({ ...s, violations }));
+  }, []);
+
+  return { ...state, check, reset, setViolations };
 }
 
 function isValidViolation(v: PolicyViolation, textLen: number): boolean {
@@ -87,7 +84,6 @@ function mergeViolations(
   const validH = heuristic.filter((v) => isValidViolation(v, textLen));
   const validA = ai.filter((v) => isValidViolation(v, textLen));
 
-  // AI вытесняет эвристику при перекрытии спанов
   const aiSpans = validA.map((v) => [v.start, v.end] as [number, number]);
   const filteredH = validH.filter(
     (h) => !aiSpans.some(([s, e]) => h.start < e && h.end > s)
@@ -95,8 +91,6 @@ function mergeViolations(
 
   const combined = [...filteredH, ...validA].sort((a, b) => a.start - b.start);
 
-  // Дедупликация ТОЛЬКО по точным позициям (start:end).
-  // Одинаковый matchedText на разных позициях — это разные нарушения, не дубли.
   const seenPos = new Set<string>();
   const deduped: PolicyViolation[] = [];
 

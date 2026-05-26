@@ -26,7 +26,6 @@ import RichEditor, { type RichEditorHandle } from "@/components/RichEditor";
 import { useLocalStorage, clearStorageByPrefix } from "@/hooks/useLocalStorage";
 import type { PolicyViolation, PolicyDocument } from "@shared/types";
 
-// ── localStorage key prefix ───────────────────────────────────────────────────
 const LS = "epc_v1_";
 
 type Panel = "violations" | "rules" | "stats";
@@ -49,7 +48,7 @@ const SEV_LABELS: Record<string, string> = {
   info:    "Инфо",
 };
 
-const SEVERITY_ICON = {
+const SEVERITY_ICON: Record<string, React.ReactNode> = {
   error:   <AlertTriangle className="h-3.5 w-3.5 text-destructive shrink-0" />,
   warning: <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />,
   info:    <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />,
@@ -80,7 +79,7 @@ function legendDotClass(v: PolicyViolation): string {
   return `legend-dot legend-dot-${v.severity === "error" ? "error" : v.severity === "warning" ? "warning" : "info"}`;
 }
 
-// ── Normalize DOM text to match server plain-text offsets ─────────────────────
+// ── DOM text node collector ───────────────────────────────────────────────────
 function collectTextNodes(
   container: HTMLElement,
 ): { node: Text; start: number; end: number }[] {
@@ -111,7 +110,7 @@ function collectTextNodes(
   return result;
 }
 
-// ── Inline export menu ────────────────────────────────────────────────────────
+// ── Export menu ───────────────────────────────────────────────────────────────
 function ExportMenu({ onExport, disabled }: { onExport: (f: "docx" | "html" | "txt") => void; disabled: boolean }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -147,7 +146,7 @@ function ExportMenu({ onExport, disabled }: { onExport: (f: "docx" | "html" | "t
   );
 }
 
-// ── drag-resize ───────────────────────────────────────────────────────────────
+// ── Drag-resize ───────────────────────────────────────────────────────────────
 function useDragResize(initial: number, min: number, max: number, dir: "left" | "right" = "right") {
   const [width, setWidth] = useState(initial);
   const drag = useRef(false);
@@ -174,13 +173,7 @@ function useDragResize(initial: number, min: number, max: number, dir: "left" | 
 
 // ── Annotated HTML view ───────────────────────────────────────────────────────
 function AnnotatedHtmlView({
-  html,
-  violations,
-  hoveredId,
-  selected,
-  onHover,
-  onSelect,
-  spanRefs,
+  html, violations, hoveredId, selected, onHover, onSelect, spanRefs,
 }: {
   html:       string;
   violations: PolicyViolation[];
@@ -272,29 +265,30 @@ export default function Workbench() {
   const editorRef            = useRef<RichEditorHandle>(null);
 
   // ── Persisted state ─────────────────────────────────────────────────────────
-  const [docName, setDocName, clearDocName]           = useLocalStorage(`${LS}docName`, "Документ не загружен");
-  const [docHtml, setDocHtml, clearDocHtml]           = useLocalStorage(`${LS}docHtml`, "", 800);
-  const [docText, setDocText, clearDocText]           = useLocalStorage(`${LS}docText`, "", 800);
+  const [docName, setDocName, clearDocName]       = useLocalStorage(`${LS}docName`, "Документ не загружен");
+  const [docHtml, setDocHtml, clearDocHtml]       = useLocalStorage(`${LS}docHtml`, "", 800);
+  const [docText, setDocText, clearDocText]       = useLocalStorage(`${LS}docText`, "", 800);
   const [activePolicyId, setActivePolicyId,
-         clearActivePolicyId]                         = useLocalStorage<string | null>(`${LS}activePolicyId`, null, 0);
-  const [catFilter, setCatFilter, clearCatFilter]     = useLocalStorage(`${LS}catFilter`, "all", 0);
-  const [sevFilter, setSevFilter, clearSevFilter]     = useLocalStorage(`${LS}sevFilter`, "all", 0);
+         clearActivePolicyId]                     = useLocalStorage<string | null>(`${LS}activePolicyId`, null, 0);
+  const [catFilter, setCatFilter, clearCatFilter] = useLocalStorage(`${LS}catFilter`, "all", 0);
+  const [sevFilter, setSevFilter, clearSevFilter] = useLocalStorage(`${LS}sevFilter`, "all", 0);
   const [savedViolations, setSavedViolations,
-         clearSavedViolations]                        = useLocalStorage<PolicyViolation[]>(`${LS}violations`, [], 800);
+         clearSavedViolations]                    = useLocalStorage<PolicyViolation[]>(`${LS}violations`, [], 800);
+
   // ── Transient state ──────────────────────────────────────────────────────────
-  const [editMode, setEditMode] = useState(false);
-  const [panel, setPanel]       = useState<Panel>("violations");
-  const [selected, setSelected] = useState<{ start: number; end: number } | null>(null);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [editMode, setEditMode]       = useState(false);
+  const [panel, setPanel]             = useState<Panel>("violations");
+  const [selected, setSelected]       = useState<{ start: number; end: number } | null>(null);
+  const [hoveredId, setHoveredId]     = useState<string | null>(null);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
 
-  const [policies, setPolicies]             = useState<(Pick<PolicyDocument, "id" | "name" | "uploadedAt"> & { ruleCount: number; aiParsed: boolean })[]>([]);
-  const [policyRules, setPolicyRules]       = useState<PolicyDocument["rules"]>([]);
-  const [policyLoading, setPolicyLoading]   = useState(false);
+  const [policies, setPolicies]           = useState<(Pick<PolicyDocument, "id" | "name" | "uploadedAt"> & { ruleCount: number; aiParsed: boolean })[]>([]);
+  const [policyRules, setPolicyRules]     = useState<PolicyDocument["rules"]>([]);
+  const [policyLoading, setPolicyLoading] = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
-  const [linkUrl, setLinkUrl]               = useState("");
-  const [linkLoading, setLinkLoading]       = useState(false);
-  const [exportLoading, setExportLoading]   = useState(false);
+  const [linkUrl, setLinkUrl]             = useState("");
+  const [linkLoading, setLinkLoading]     = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
 
   const sidebar    = useDragResize(220, 160, 320, "right");
   const rightPanel = useDragResize(340, 280, 520, "left");
@@ -302,7 +296,7 @@ export default function Workbench() {
   const { violations: liveViolations, loading: checkLoading, error: checkError,
           result: checkResult, activeModel, check, reset, setViolations } = useChecker();
 
-  // On mount: restore violations from localStorage into the checker
+  // Restore violations from localStorage on first mount
   useEffect(() => {
     if (savedViolations.length > 0) {
       setViolations(savedViolations);
@@ -310,7 +304,7 @@ export default function Workbench() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep savedViolations in sync whenever live violations change
+  // Keep savedViolations in sync with live checker output
   useEffect(() => {
     if (liveViolations.length > 0) {
       setSavedViolations(liveViolations);
@@ -337,7 +331,6 @@ export default function Workbench() {
 
   const hasDraft = docHtml.length > 0 || docText.length > 0;
 
-  // ── Clear all draft data ─────────────────────────────────────────────────────
   function handleClearDraft() {
     clearDocName(); clearDocHtml(); clearDocText();
     clearActivePolicyId(); clearCatFilter(); clearSevFilter();
@@ -359,12 +352,8 @@ export default function Workbench() {
     } catch (_) {}
   }
 
-  // Fetch policies + restore saved rules on mount
-  useEffect(() => {
-    fetchPolicies();
-  }, []);
+  useEffect(() => { fetchPolicies(); }, []);
 
-  // When activePolicyId is restored from LS, also fetch its rules
   const prevPolicyId = useRef<string | null>(null);
   useEffect(() => {
     if (!activePolicyId || activePolicyId === prevPolicyId.current) return;
@@ -639,7 +628,7 @@ export default function Workbench() {
         </DialogContent>
       </Dialog>
 
-      {/* Clear draft confirmation dialog */}
+      {/* Clear draft dialog */}
       <Dialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -670,7 +659,9 @@ export default function Workbench() {
             </Button>
             {policies.length > 0 && (
               <Select value={activePolicyId ?? ""} onValueChange={setActivePolicyId}>
-                <SelectTrigger className="h-8 w-full text-xs"><SelectValue placeholder="Выбрать…" /></SelectTrigger>
+                <SelectTrigger className="h-8 w-full text-xs">
+                  <SelectValue placeholder="Выбрать…" />
+                </SelectTrigger>
                 <SelectContent>
                   {policies.map((p) => (
                     <SelectItem key={p.id} value={p.id} className="text-xs">
@@ -758,33 +749,27 @@ export default function Workbench() {
                     <Badge variant="outline" className="text-[10px] shrink-0">{filteredViolations.length}/{violations.length}</Badge>
                   </div>
 
-                  {/* Filters */}
                   <div className="flex flex-col gap-1.5">
                     <Select value={catFilter} onValueChange={setCatFilter}>
                       <SelectTrigger className="h-7 w-full text-xs">
-                        <SelectValue>
-                          {catFilter === "all" ? "Все категории" : (CATEGORY_LABELS[catFilter] ?? catFilter)}
-                        </SelectValue>
+                        <SelectValue placeholder="Все категории" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all" className="text-xs">Все категории</SelectItem>
-                        {Object.entries(CATEGORY_LABELS).map(([k, v]) => (
-                          <SelectItem key={k} value={k} className="text-xs">{v}</SelectItem>
+                        {Object.entries(CATEGORY_LABELS).map(([k, label]) => (
+                          <SelectItem key={k} value={k} className="text-xs">{label}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
 
                     <Select value={sevFilter} onValueChange={setSevFilter}>
                       <SelectTrigger className="h-7 w-full text-xs">
-                        <SelectValue>
-                          {SEV_LABELS[sevFilter] ?? sevFilter}
-                        </SelectValue>
+                        <SelectValue placeholder="Все уровни" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all"     className="text-xs">Все уровни</SelectItem>
-                        <SelectItem value="error"   className="text-xs">Ошибки</SelectItem>
-                        <SelectItem value="warning" className="text-xs">Предупреждения</SelectItem>
-                        <SelectItem value="info"    className="text-xs">Инфо</SelectItem>
+                        {Object.entries(SEV_LABELS).map(([k, label]) => (
+                          <SelectItem key={k} value={k} className="text-xs">{label}</SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -871,14 +856,14 @@ export default function Workbench() {
                 <div className="space-y-3">
                   <h2 className="text-sm font-semibold">Статистика проверки</h2>
                   <div className="grid grid-cols-2 gap-2">
-                    {[
-                      { label: "Всего",         value: stats.total },
-                      { label: "Ошибок",        value: stats.errors,   color: "text-destructive" },
+                    {([
+                      { label: "Всего",          value: stats.total,    color: "" },
+                      { label: "Ошибок",         value: stats.errors,   color: "text-destructive" },
                       { label: "Предупреждений", value: stats.warnings, color: "text-amber-500" },
                       { label: "Инфо",           value: stats.info,     color: "text-blue-500" },
-                    ].map(({ label, value, color }) => (
+                    ] as { label: string; value: number; color: string }[]).map(({ label, value, color }) => (
                       <div key={label} className="rounded-md border p-3 overflow-hidden">
-                        <div className={`text-xl font-bold ${color ?? ""}`}>{value}</div>
+                        <div className={`text-xl font-bold ${color}`}>{value}</div>
                         <div className="text-[11px] text-muted-foreground truncate">{label}</div>
                       </div>
                     ))}
