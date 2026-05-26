@@ -4,8 +4,12 @@
  *
  * Flow:
  *   1. heuristicCheck() → immediate violations
- *   2. POST /api/check  → AI violations
- *   3. merge (AI overrides heuristic for same span)
+ *   2. POST /api/check  → AI violations (positions already verified server-side)
+ *   3. merge: AI overrides heuristic for same span; client-side guard added
+ *
+ * FIX: mergeViolations теперь также отфильтровывает нарушения
+ *      с невалидными позициями (start < 0, end > textLength, start >= end)
+ *      перед рендером, чтобы сегментатор в Workbench не падал.
  */
 
 import { useState, useCallback } from "react";
@@ -43,9 +47,8 @@ export function useChecker() {
         return;
       }
 
-      // Merge: AI violations replace heuristic if same span overlaps
       const aiViolations = data.violations ?? [];
-      const merged = mergeViolations(heuristic, aiViolations);
+      const merged = mergeViolations(heuristic, aiViolations, documentText.length);
 
       setState({
         violations: merged,
@@ -69,14 +72,31 @@ export function useChecker() {
   return { ...state, check, reset };
 }
 
+/** Гарантирует, что позиции нарушения находятся в пределах текста. */
+function isValidViolation(v: PolicyViolation, textLen: number): boolean {
+  return (
+    typeof v.start === "number" &&
+    typeof v.end   === "number" &&
+    v.start >= 0 &&
+    v.end   <= textLen &&
+    v.start <  v.end
+  );
+}
+
 function mergeViolations(
   heuristic: PolicyViolation[],
   ai: PolicyViolation[],
+  textLen: number,
 ): PolicyViolation[] {
-  // Remove heuristic items whose span overlaps with an AI item
-  const aiSpans = ai.map((v) => [v.start, v.end] as [number, number]);
-  const filtered = heuristic.filter(
+  // Отфильтровываем невалидные позиции с обеих сторон
+  const validH = heuristic.filter((v) => isValidViolation(v, textLen));
+  const validA = ai.filter((v) => isValidViolation(v, textLen));
+
+  // AI-нарушения вытесняют эвристику при перекрытии спанов
+  const aiSpans = validA.map((v) => [v.start, v.end] as [number, number]);
+  const filteredH = validH.filter(
     (h) => !aiSpans.some(([s, e]) => h.start < e && h.end > s)
   );
-  return [...filtered, ...ai].sort((a, b) => a.start - b.start);
+
+  return [...filteredH, ...validA].sort((a, b) => a.start - b.start);
 }

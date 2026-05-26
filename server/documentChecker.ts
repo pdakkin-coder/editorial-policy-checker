@@ -1,6 +1,11 @@
 /**
  * documentChecker.ts
  * Проверяет текст документа по набору правил PolicyRule.
+ *
+ * FIX: после получения ответа от Gemini все позиции (start/end) верифицируются
+ *      через text.indexOf(matchedText) — если AI вернул неверный офсет,
+ *      он корректируется по фактическому вхождению строки в исходный текст.
+ *      Нарушения без верифицируемого matchedText отбрасываются.
  */
 
 import { callGemini } from "./geminiRouter.js";
@@ -11,6 +16,13 @@ import type {
 const LOG = "[doc-checker]";
 
 const SYSTEM_INSTRUCTION = `Ты — редактор. Проверь текст документа по списку правил редакционной политики.
+
+ВАЖНО:
+- Поля "start" и "end" — это БАЙТОВЫЕ (символьные) смещения в проверяемом тексте,
+  считая с 0. text.substring(start, end) должно точно совпадать с "matchedText".
+- "matchedText" должен быть ТОЧНОЙ подстрокой из исходного текста (регистр, пробелы).
+- Не включай нарушения, если не можешь точно указать позицию.
+
 Верни строго JSON без markdown-блоков:
 {
   "violations": [
@@ -32,6 +44,49 @@ const SYSTEM_INSTRUCTION = `Ты — редактор. Проверь текст
 }
 Если нарушений нет — violations: [].`;
 
+/**
+ * Верифицирует и корректирует позиции нарушения:
+ * 1. Проверяет text.substring(start, end) === matchedText
+ * 2. Если нет — ищет matchedText через indexOf начиная с max(0, start-200)
+ * 3. Если не найдено — возвращает null (нарушение отбрасывается)
+ */
+function resolvePosition(
+  text: string,
+  v: PolicyViolation,
+): PolicyViolation | null {
+  const matched = v.matchedText;
+  if (!matched || matched.length === 0) return null;
+
+  // Case 1: позиция верная
+  if (
+    typeof v.start === "number" &&
+    typeof v.end === "number" &&
+    v.start >= 0 &&
+    v.end <= text.length &&
+    v.end - v.start === matched.length &&
+    text.substring(v.start, v.end) === matched
+  ) {
+    return v;
+  }
+
+  // Case 2: поиск в окрестности заявленной позиции (±500 символов)
+  const searchFrom = Math.max(0, (v.start ?? 0) - 500);
+  const idx = text.indexOf(matched, searchFrom);
+  if (idx !== -1) {
+    return { ...v, start: idx, end: idx + matched.length };
+  }
+
+  // Case 3: поиск по всему тексту (fallback)
+  const idxFull = text.indexOf(matched);
+  if (idxFull !== -1) {
+    return { ...v, start: idxFull, end: idxFull + matched.length };
+  }
+
+  // Не найдено — отбрасываем
+  console.warn(`${LOG} drop violation id=${v.id}: matchedText not found in document`);
+  return null;
+}
+
 export async function checkDocument(
   req: CheckDocumentRequest,
   rules: PolicyRule[],
@@ -44,10 +99,13 @@ export async function checkDocument(
     .map((r, i) => `${i + 1}. [${r.id}] (${r.category}, ${r.severity}) ${r.name}: ${r.description}`)
     .join("\n");
 
+  const docSlice = req.documentText.slice(0, 15000);
+
   const userText =
     `${SYSTEM_INSTRUCTION}\n\n` +
     `Правила редакционной политики:\n${rulesText}\n\n` +
-    `Проверяемый текст (язык: ${req.language ?? "auto"}):\n${req.documentText.slice(0, 15000)}`;
+    `Проверяемый текст (язык: ${req.language ?? "auto"}, начало с символа 0):\n` +
+    `<<<TEXT_START>>>\n${docSlice}\n<<<TEXT_END>>>`;
 
   const contents = [
     { role: "user", parts: [{ text: userText }] },
@@ -79,11 +137,25 @@ export async function checkDocument(
       );
     }
 
-    const count = parsed.violations?.length ?? 0;
-    console.info(`${LOG} parsed OK — ${count} violations, lang: ${parsed.detectedLanguage ?? "?"}`);
+    const raw = (parsed.violations ?? []).map((v, i) => ({ ...v, source: "ai" as const, id: v.id ?? `v-${i}` }));
+
+    // ── Верификация позиций ─────────────────────────────────────────────────
+    const verified: PolicyViolation[] = [];
+    let corrected = 0;
+    let dropped = 0;
+    for (const v of raw) {
+      const fixed = resolvePosition(req.documentText, v);
+      if (fixed) {
+        if (fixed.start !== v.start || fixed.end !== v.end) corrected++;
+        verified.push(fixed);
+      } else {
+        dropped++;
+      }
+    }
+    console.info(`${LOG} position verify: ${verified.length} OK, ${corrected} corrected, ${dropped} dropped`);
 
     return {
-      violations:       (parsed.violations ?? []).map((v, i) => ({ ...v, source: "ai" as const, id: v.id ?? `v-${i}` })),
+      violations:       verified,
       summary:          parsed.summary,
       detectedLanguage: parsed.detectedLanguage,
       checkedAt:        new Date().toISOString(),

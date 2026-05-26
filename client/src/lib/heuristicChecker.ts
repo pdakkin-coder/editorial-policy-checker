@@ -7,6 +7,9 @@
  * — wrong dash usage (hyphen instead of em-dash)
  *
  * Runs synchronously, returns results instantly before AI check.
+ *
+ * FIX: long-sentence cursor now advances by the correct byte length
+ *      (segment length + separator length), eliminating position drift.
  */
 
 import type { PolicyViolation } from "@shared/types";
@@ -58,24 +61,41 @@ export function heuristicCheck(
   }
 
   // ── Long sentences (> 50 words) ───────────────────────────────────────────
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  let cursor = 0;
-  for (const sent of sentences) {
-    const wordCount = sent.trim().split(/\s+/).length;
+  // Split while preserving the separators so we can compute exact offsets.
+  // Strategy: iterate with regex to get both match positions and segment text.
+  const sentenceRe = /[^.!?]+(?:[.!?]+|$)/g;
+  let sm: RegExpExecArray | null;
+  while ((sm = sentenceRe.exec(text)) !== null) {
+    const sent = sm[0];
+    const start = sm.index;
+    const wordCount = sent.trim().split(/\s+/).filter(Boolean).length;
     if (wordCount > 50) {
-      const start = text.indexOf(sent, cursor);
-      if (start !== -1) {
-        violations.push({
-          id: id(), ruleId: "heuristic-long-sentence",
-          category: "style", severity: "warning",
-          start, end: start + sent.length,
-          matchedText: sent.slice(0, 80) + (sent.length > 80 ? "…" : ""),
-          explanation: `Длинное предложение (${wordCount} слов). Рекомендуется разбить.`,
-          confidence: 0.8, source: "heuristic",
-        });
-      }
+      violations.push({
+        id: id(), ruleId: "heuristic-long-sentence",
+        category: "style", severity: "warning",
+        start,
+        end: start + sent.length,
+        matchedText: sent.slice(0, 80) + (sent.length > 80 ? "…" : ""),
+        explanation: `Длинное предложение (${wordCount} слов). Рекомендуется разбить.`,
+        confidence: 0.8, source: "heuristic",
+      });
     }
-    cursor += sent.length;
+  }
+
+  // ── Wrong dash (hyphen between words instead of em-dash) ─────────────────
+  const dashRe = /(?<=\S) - (?=\S)/g;
+  let dm: RegExpExecArray | null;
+  while ((dm = dashRe.exec(text)) !== null) {
+    violations.push({
+      id: id(), ruleId: "heuristic-wrong-dash",
+      category: "typography", severity: "warning",
+      start: dm.index + 1, // skip the leading \S
+      end: dm.index + dm[0].length - 1,
+      matchedText: "-",
+      suggestion: "—",
+      explanation: "Используйте длинное тире вместо дефиса в предложениях.",
+      confidence: 0.85, source: "heuristic",
+    });
   }
 
   return violations;
